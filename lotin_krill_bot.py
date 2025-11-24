@@ -1,23 +1,24 @@
 
 from transliterate import to_cyrillic, to_latin
 import telebot
+#from telebot import types
 from flask import Flask, request
 import os
 
-#TOKEN='7801959994:AAGtwyAxUYAXDgD4ojqSyFUS-NC8HZ3U0ls'
 TOKEN = os.getenv("TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 bot = telebot.TeleBot(TOKEN)
-
+state={}
 app = Flask(__name__)
 
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    notice="Assalomu aleykum!\nQuyidagi amaliyot uchun: Krill-Lotin, Lotin-Krill."
-    notice+="\tmatn kiriting:"
-    bot.reply_to(message, notice)
 
+@bot.message_handler(commands=['start'])
+def send_wellcome(message):
+    
+    
+    notice="\tMатн киритинг:\t 📥..."
+    bot.send_message(message.chat.id, notice)
 
 @bot.message_handler(func=lambda message: True)
 def echo_all(message):
@@ -28,7 +29,8 @@ def echo_all(message):
         answer=to_latin(msg)
     bot.reply_to(message, answer)
     
-# bot.infinity_polling()
+#bot.infinity_polling()
+
 
 @app.route('/' + TOKEN, methods=['POST'])
 def webhook():
@@ -46,6 +48,7 @@ if __name__ == "__main__":
 
     PORT = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=PORT)
+
 
 
 
