@@ -28,8 +28,7 @@ def echo_all(message):
     else:
         answer=to_latin(msg)
     bot.reply_to(message, answer)
-    
-#bot.infinity_polling()
+
 
 
 @app.route('/' + TOKEN, methods=['POST'])
