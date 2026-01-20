@@ -27,7 +27,7 @@ def echo_all(message):
         answer=to_cyrillic(msg)
     else:
         answer=to_latin(msg)
-    bot.reply_to(message, answer)
+    bot.reply_to(message, f"`{answer}`")
 
 
 
