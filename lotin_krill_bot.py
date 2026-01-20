@@ -4,6 +4,7 @@ import telebot
 #from telebot import types
 from flask import Flask, request
 import os
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 TOKEN = os.getenv("TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -27,7 +28,7 @@ def echo_all(message):
         answer=to_cyrillic(msg)
     else:
         answer=to_latin(msg)
-    bot.reply_to(message, f"`{answer}`", reply= "Markdown")
+    bot.reply_to(message, f"`{answer}`", parse_mode="Markdown")
 
 
 
