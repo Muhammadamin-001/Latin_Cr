@@ -29,7 +29,7 @@ def apply_effects(img):
 
 def draw_caption(img, user_text):
     # Shriftni tayyorlash
-    font_size = int(img.width / 18) if img.width > 400 else 25
+    font_size = int(img.width / 10) if img.width > 400 else 50
     try:
         font = ImageFont.truetype("arial.ttf", font_size)
     except:
