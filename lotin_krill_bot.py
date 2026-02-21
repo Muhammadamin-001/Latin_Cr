@@ -3,10 +3,7 @@ import telebot
 from flask import Flask, request
 import os
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-<<<<<<< HEAD
 import Hazil_rasm
-=======
->>>>>>> ac37f28da8cd05911fe26a51c54caf87b37a0c4b
 
 TOKEN = os.getenv("TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -91,23 +88,12 @@ def handle_text(message):
             reply_markup=get_main_services_markup()
         )
 
-<<<<<<< HEAD
 @bot.message_handler(content_types=['photo', 'document'])
 def handle_photo_or_document(message):
     chat_id = message.chat.id
     if state.get(chat_id) == 'hazil_rasm':
         user_text = message.caption if message.caption else "DIQQAT! SOXTA VIDEO USTASI"
         user_text = Hazil_rasm.clean_text(user_text)
-=======
-@bot.message_handler(func=lambda message: True)
-def echo_all(message):
-    msg=message.text
-    if msg.isascii():
-        answer=to_cyrillic(msg)
-    else:
-        answer=to_latin(msg)
-    bot.reply_to(message, f"`{answer}`", parse_mode="Markdown")
->>>>>>> ac37f28da8cd05911fe26a51c54caf87b37a0c4b
 
         try:
             if message.content_type == 'photo':
