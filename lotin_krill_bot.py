@@ -51,7 +51,7 @@ def handle_menu_navigation(call):
     elif call.data == 'hazil_rasm':
         state[chat_id] = 'hazil_rasm'
         bot.edit_message_text(
-            "Rasm va tagiga matn yozib yuboring. Matnni qo'shib rasmga effekt beraman! ✨",
+            "⏳ Rasm va kommentiga matn yozib yuboring. Matnni qo'shib rasmga effekt beraman! ✨",
             chat_id,
             msg_id,
             reply_markup=get_back_markup()
@@ -67,16 +67,11 @@ def handle_menu_navigation(call):
         )
         bot.send_message(
             call.message.chat.id,
-            "Bot xizmatlaridan birini tanlang:",
+            "💼 Bot xizmatlaridan birini tanlang:\n",
             parse_mode="Markdown",
             reply_markup=get_main_services_markup()
         )
-        # bot.edit_message_text(
-        #     "Bot xizmatlaridan birini tanlang:",
-        #     chat_id,
-        #     msg_id,
-        #     reply_markup=get_main_services_markup()
-        # )
+
         
 
 @bot.message_handler(content_types=['text'])
@@ -91,7 +86,9 @@ def handle_text(message):
             answer = to_latin(msg)
         bot.send_message(
             chat_id,
-            f"`{answer}`",
+            f"🧾 Matndan nusxa oling:\n\n"
+            f"👉 `{answer}`\n"
+            f"{'─' * 15}\n",
             parse_mode="Markdown",
             reply_markup=get_back_markup()
         )
@@ -106,7 +103,7 @@ def handle_text(message):
 def handle_photo_or_document(message):
     chat_id = message.chat.id
     if state.get(chat_id) == 'hazil_rasm':
-        user_text = message.caption if message.caption else "DIQQAT! SOXTA VIDEO USTASI"
+        user_text = message.caption if message.caption else "⚠️ DIQQAT! SOXTA VIDEO USTASI"
         user_text = Hazil_rasm.clean_text(user_text)
 
         try:
