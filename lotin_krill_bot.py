@@ -43,7 +43,8 @@ def handle_menu_navigation(call):
     if call.data == 'krill_latin':
         state[chat_id] = 'krill_latin'
         bot.edit_message_text(
-            "📝 Matn kiriting:",
+            "📝 Matn kiriting:\n"
+            f"{'✦ ' * 10}\n",
             chat_id,
             msg_id,
             reply_markup=get_back_markup()
