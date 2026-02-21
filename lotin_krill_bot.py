@@ -58,12 +58,14 @@ def handle_menu_navigation(call):
         )
     elif call.data == 'back_to_main':
         state[chat_id] = 'main'
+        # Faqat tugma o'chadi, xabar qoladi
         bot.edit_message_text(
             "Bot xizmatlaridan birini tanlang:",
             chat_id,
             msg_id,
             reply_markup=get_main_services_markup()
         )
+        
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
