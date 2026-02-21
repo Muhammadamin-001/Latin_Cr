@@ -5,7 +5,7 @@ import re
 import textwrap
 
 def clean_text(text):
-    return re.sub(r'[^\x00-\x7Fа-яА-ЯёЁoʻo\'g\'s\' \n!?,.()]+', '', text)
+    return re.sub(r'[^\x00-\x7Fа-яА-ЯёЁoʻo‘g‘s‘ \n!?,.()]+', '', text)
 
 def open_image(image_bytes):
     img = Image.open(io.BytesIO(image_bytes))
@@ -29,7 +29,7 @@ def apply_effects(img):
 
 def draw_caption(img, user_text):
     # Shriftni tayyorlash
-    font_size = int(img.width / 10) if img.width > 400 else 50
+    font_size = int(img.width / 18) if img.width > 400 else 25
     try:
         font = ImageFont.truetype("arial.ttf", font_size)
     except:
