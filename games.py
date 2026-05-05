@@ -92,11 +92,20 @@ def register(bot, main_menu_markup_factory=None, main_state=None):
             for letter in word_state["word"]
         )
 
-    def build_word_keyboard(word_state):
+    def initial_word_letters(word_state):
         alphabet = LATIN_LETTERS if word_state["alphabet"] == "latin" else CYRILLIC_LETTERS
         letters = set(word_state["word"])
-        letters.update(random.sample(alphabet, min(len(alphabet), max(0, 18 - len(letters)))))
-        buttons = [letter for letter in letters if letter.strip()]
+        extra_letters = [letter for letter in alphabet if letter not in letters]
+        letters.update(
+            random.sample(extra_letters, min(len(extra_letters), max(0, 18 - len(letters))))
+        )
+        return letters
+
+    def build_word_keyboard(word_state):
+        letters = word_state.get("letters") or initial_word_letters(word_state)
+        word_state["letters"] = letters
+        used_letters = set(word_state["used"]) | word_state["opened"]
+        buttons = [letter for letter in letters if letter.strip() and letter not in used_letters]
         random.shuffle(buttons)
 
         markup = InlineKeyboardMarkup(row_width=6)
@@ -123,7 +132,7 @@ def register(bot, main_menu_markup_factory=None, main_state=None):
 
     def start_word_game(chat_id, message, alphabet):
         word = pick_word(alphabet)
-        game_states[chat_id] = {
+        word_state = {
             "mode": "word",
             "alphabet": alphabet,
             "word": word,
@@ -132,6 +141,8 @@ def register(bot, main_menu_markup_factory=None, main_state=None):
             "help_used": 0,
             "help_limit": max(1, round(len(word) * 0.4)),
         }
+        word_state["letters"] = initial_word_letters(word_state)
+        game_states[chat_id] = word_state
         edit_or_send(
             message,
             word_text(game_states[chat_id]),
@@ -149,7 +160,10 @@ def register(bot, main_menu_markup_factory=None, main_state=None):
         word_state = game_states[chat_id]
         hidden = [letter for letter in set(word_state["word"]) if letter not in word_state["opened"]]
         if hidden:
-            word_state["opened"].add(random.choice(hidden))
+            letter = random.choice(hidden)
+            word_state["opened"].add(letter)
+            if letter not in word_state["used"]:
+                word_state["used"].append(letter)
             word_state["help_used"] += 1
 
     def handle_word_letter(call, letter):
