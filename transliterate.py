@@ -2,6 +2,19 @@
 import re
 import sys
 
+LATIN_APOSTROPHES = "'’ʻʼ`´‘"
+CYRILLIC_RE = re.compile(r"[А-Яа-яЁёҚқҒғҲҳЎў]")
+
+
+def normalize_latin_apostrophes(text):
+    """Normalize Uzbek Latin apostrophe variants after o/g to one form."""
+    return re.sub(r"([oOgG])[%s]" % re.escape(LATIN_APOSTROPHES), r"\1‘", text)
+
+
+def contains_cyrillic(text):
+    """Return True when text contains Uzbek/Russian Cyrillic letters."""
+    return bool(CYRILLIC_RE.search(text))
+
 LATIN_TO_CYRILLIC = {
     'a': 'а', 'A': 'А',
     'b': 'б', 'B': 'Б',
@@ -28,7 +41,7 @@ LATIN_TO_CYRILLIC = {
     'x': 'х', 'X': 'Х',
     'y': 'й', 'Y': 'Й',
     'z': 'з', 'Z': 'З',
-    'ʼ': 'ъ',  # TODO: case?
+    "'": 'ъ', '’': 'ъ', '‘': 'ъ', 'ʻ': 'ъ', 'ʼ': 'ъ', '`': 'ъ', '´': 'ъ',
 }
 LATIN_VOWELS = (
     'a', 'A', 'e', 'E', 'i', 'I', 'o', 'O', 'u', 'U', 'o‘', 'O‘'
@@ -1240,7 +1253,7 @@ def to_cyrillic(text):
         'ye': 'е', 'Ye': 'Е', 'YE': 'Е',
         # different kinds of apostrophes
         'o‘': 'ў', 'O‘': 'Ў', 'oʻ': 'ў', 'Oʻ': 'Ў', "o'":"ў", "O'":"Ў",
-        'g‘': 'ғ', 'G‘': 'Ғ', 'gʻ': 'ғ', 'Gʻ': 'Ғ',
+        'g‘': 'ғ', 'G‘': 'Ғ', 'gʻ': 'ғ', 'Gʻ': 'Ғ', "g'": "ғ", "G'": "Ғ",
     }
     beginning_rules = {
         'ye': 'е', 'Ye': 'Е', 'YE': 'Е',
@@ -1260,9 +1273,9 @@ def to_cyrillic(text):
         'ya': 'йа', 'Ya': 'Йа', 'YA': 'ЙА',
     }
 
-    # standardize some characters
-    # the first one is the windows string, the second one is the mac string
-    text = text.replace('ʻ', '‘')
+    # Standardize Uzbek Latin apostrophe variants only where they are part of
+    # o'/g' letters. Standalone modifier apostrophe remains available for ъ.
+    text = normalize_latin_apostrophes(text)
 
     def replace_soft_sign_words(m):
         word = m.group(1)

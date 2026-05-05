@@ -1,4 +1,4 @@
-from transliterate import to_cyrillic, to_latin
+from transliterate import contains_cyrillic, to_cyrillic, to_latin
 import telebot
 from flask import Flask, request
 import os
@@ -86,10 +86,10 @@ def handle_text(message):
     
     if state.get(chat_id) == 'krill_latin':
         msg = message.text
-        if msg.isascii():
-            answer = to_cyrillic(msg)
-        else:
+        if contains_cyrillic(msg):
             answer = to_latin(msg)
+        else:
+            answer = to_cyrillic(msg)
         bot.send_message(
             chat_id,
             f"🧾 Matndan nusxa oling:\n\n"

@@ -1,3 +1,5 @@
+#06/05/26- 03:00
+import html
 import random
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -9,7 +11,7 @@ WORD_ALPHABET_TEXT = "🔤 Qaysi alifboda sizga qulay?"
 
 CYRILLIC_LETTERS = list("абвгдеёжзийклмнопрстуфхцчшъэюяқғҳў")
 LATIN_LETTERS = list("abcdefghijklmnopqrstuvxyz") + ["o'", "g'", "sh", "ch"]
-
+LATIN_MULTI_LETTERS = ("o'", "g'", "sh", "ch")
 
 def register(bot, main_menu_markup_factory=None, main_state=None):
     game_states = {}
@@ -79,22 +81,46 @@ def register(bot, main_menu_markup_factory=None, main_state=None):
             InlineKeyboardButton("⬅️ Ortga", callback_data="game:number"),
         )
         return markup
+    
+    def normalize_latin_game_word(word):
+        return word.replace("ʻ", "'").replace("‘", "'").replace("’", "'")
 
+    def split_latin_letters(word):
+        letters = []
+        index = 0
+        while index < len(word):
+            for multi_letter in LATIN_MULTI_LETTERS:
+                if word.startswith(multi_letter, index):
+                    letters.append(multi_letter)
+                    index += len(multi_letter)
+                    break
+            else:
+                letters.append(word[index])
+                index += 1
+        return letters
+
+    def split_word_letters(word, alphabet):
+        if alphabet == "latin":
+            return split_latin_letters(word)
+        return list(word)
+    
     def pick_word(alphabet):
         word = random.choice(words)
         while "-" in word or " " in word or len(word) < 3:
             word = random.choice(words)
-        return to_latin(word).lower() if alphabet == "latin" else word.lower()
+        if alphabet == "latin":
+            return normalize_latin_game_word(to_latin(word).lower())
+        return word.lower()
 
     def word_display(word_state):
-        return " ".join(
+        return "".join(
             letter if letter in word_state["opened"] else "-"
-            for letter in word_state["word"]
+            for letter in word_state["word_letters"]
         )
 
     def initial_word_letters(word_state):
         alphabet = LATIN_LETTERS if word_state["alphabet"] == "latin" else CYRILLIC_LETTERS
-        letters = set(word_state["word"])
+        letters = set(word_state["word_letters"])
         extra_letters = [letter for letter in alphabet if letter not in letters]
         letters.update(
             random.sample(extra_letters, min(len(extra_letters), max(0, 18 - len(letters))))
@@ -132,14 +158,16 @@ def register(bot, main_menu_markup_factory=None, main_state=None):
 
     def start_word_game(chat_id, message, alphabet):
         word = pick_word(alphabet)
+        word_letters = split_word_letters(word, alphabet)
         word_state = {
             "mode": "word",
             "alphabet": alphabet,
             "word": word,
+            "word_letters": word_letters,
             "opened": set(),
             "used": [],
             "help_used": 0,
-            "help_limit": max(1, round(len(word) * 0.4)),
+            "help_limit": max(1, round(len(word_letters) * 0.4)),
         }
         word_state["letters"] = initial_word_letters(word_state)
         game_states[chat_id] = word_state
@@ -147,18 +175,20 @@ def register(bot, main_menu_markup_factory=None, main_state=None):
             message,
             word_text(game_states[chat_id]),
             build_word_keyboard(game_states[chat_id]),
+            parse_mode="HTML",
         )
 
     def word_text(word_state):
+        display = html.escape(word_display(word_state))
         return (
             "🧩 So'z topish o'yini\n\n"
-            f"So'z harflari: {word_display(word_state)}\n"
+            f"So'z harflari: <b>{display}</b>\n"
             "Pastdagi harflardan tanlang."
         )
 
     def reveal_random_letter(chat_id):
         word_state = game_states[chat_id]
-        hidden = [letter for letter in set(word_state["word"]) if letter not in word_state["opened"]]
+        hidden = [letter for letter in set(word_state["word_letters"]) if letter not in word_state["opened"]]
         if hidden:
             letter = random.choice(hidden)
             word_state["opened"].add(letter)
@@ -172,12 +202,12 @@ def register(bot, main_menu_markup_factory=None, main_state=None):
         if not word_state or word_state.get("mode") != "word":
             bot.answer_callback_query(call.id)
             return
-        if letter in word_state["word"]:
+        if letter in word_state["word_letters"]:
             word_state["opened"].add(letter)
         if letter not in word_state["used"]:
             word_state["used"].append(letter)
 
-        if all(letter in word_state["opened"] for letter in set(word_state["word"])):
+        if all(letter in word_state["opened"] for letter in set(word_state["word_letters"])):
             bot.answer_callback_query(call.id, "Topdingiz! 🎉")
             edit_or_send(
                 call.message,
@@ -187,7 +217,7 @@ def register(bot, main_menu_markup_factory=None, main_state=None):
             return
 
         bot.answer_callback_query(call.id)
-        edit_or_send(call.message, word_text(word_state), build_word_keyboard(word_state))
+        edit_or_send(call.message, word_text(word_state), build_word_keyboard(word_state), parse_mode="HTML")
 
     def start_number_game(chat_id, message, low, high):
         target = random.randint(low, high)
@@ -262,7 +292,7 @@ def register(bot, main_menu_markup_factory=None, main_state=None):
                 word_state["opened"] = set()
                 word_state["used"] = []
                 word_state["help_used"] = 0
-                edit_or_send(call.message, word_text(word_state), build_word_keyboard(word_state))
+                edit_or_send(call.message, word_text(word_state), build_word_keyboard(word_state), parse_mode="HTML")
             return
         if call.data == "game:word:help":
             word_state = game_states.get(chat_id)
@@ -278,14 +308,14 @@ def register(bot, main_menu_markup_factory=None, main_state=None):
                 return
             bot.answer_callback_query(call.id)
             reveal_random_letter(chat_id)
-            if all(letter in word_state["opened"] for letter in set(word_state["word"])):
+            if all(letter in word_state["opened"] for letter in set(word_state["word_letters"])):
                 edit_or_send(
                     call.message,
                     f"🎉 Tabriklayman! Siz so'zni to'liq topdingiz:\n\n✅ {word_state['word'].upper()}",
                     word_after_win_markup(),
                 )
             else:
-                edit_or_send(call.message, word_text(word_state), build_word_keyboard(word_state))
+                edit_or_send(call.message, word_text(word_state), build_word_keyboard(word_state), parse_mode="HTML")
             return
         if call.data.startswith("game:word:letter:"):
             handle_word_letter(call, call.data.split(":", 3)[3])
