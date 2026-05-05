@@ -29,7 +29,7 @@ def apply_effects(img):
 
 def draw_caption(img, user_text):
     # Shriftni tayyorlash
-    font_size = int(img.width / 10) if img.width > 400 else 50
+    font_size = int(img.width / 18) if img.width > 400 else 25
     try:
         font = ImageFont.truetype("arial.ttf", font_size)
     except:
@@ -44,7 +44,7 @@ def draw_caption(img, user_text):
     overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
     draw_overlay = ImageDraw.Draw(overlay)
     
-    line_height = font_size + 10
+    line_height = font_size + 15
     rect_height = len(lines) * line_height + 20
     # Matn foni: qora rang, 130 darajali shaffoflik (0-255 oralig'ida)
     draw_overlay.rectangle([0, 0, img.width, rect_height + 30], fill=(0, 0, 0, 130))
