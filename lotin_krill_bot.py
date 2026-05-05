@@ -4,6 +4,7 @@ from flask import Flask, request
 import os
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import Hazil_rasm
+import games
 
 TOKEN = os.getenv("TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -19,7 +20,10 @@ def get_main_services_markup():
         InlineKeyboardButton("🇺🇿 Krill-Lotin", callback_data='krill_latin'),
         InlineKeyboardButton("🖼️ Rasmga matn", callback_data='hazil_rasm')
     )
+    markup.add(InlineKeyboardButton("🎮 O'yinlar", callback_data='game:open'))
     return markup
+
+games_controller = games.register(bot, get_main_services_markup, state)
 
 def get_back_markup():
     markup = InlineKeyboardMarkup()
@@ -76,6 +80,9 @@ def handle_menu_navigation(call):
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
     chat_id = message.chat.id
+    
+    if games_controller["process_text"](message):
+        return
     
     if state.get(chat_id) == 'krill_latin':
         msg = message.text
