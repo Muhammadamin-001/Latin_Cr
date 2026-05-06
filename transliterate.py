@@ -5,6 +5,39 @@ import sys
 LATIN_APOSTROPHES = "'’ʻʼ`´‘"
 CYRILLIC_RE = re.compile(r"[А-Яа-яЁёҚқҒғҲҳЎў]")
 
+POPULAR_WORDS = (
+    "android", "apple", "facebook", "gmail", "google", "github",
+    "instagram", "iphone", "linkedin", "microsoft", "netflix",
+    "snapchat", "spotify", "telegram", "tiktok", "twitter", "whatsapp",
+    "windows", "youtube", "zoom",
+)
+PROTECTED_TEXT_RE = re.compile(
+    r"("
+    r"https?://\S+"
+    r"|www\.\S+"
+    r"|t\.me/\S+"
+    r"|\b[A-Za-z0-9][A-Za-z0-9.-]*\."
+    r"(?:com|net|org|uz|ru|io|ai|app|dev|edu|gov|info|me)"
+    r"(?:/\S*)?"
+    r"|@[A-Za-z0-9_]{1,32}"
+    r"|\b(?:%s)(?=(?:ga|da|dan|dagi|ni|ning|mi|cha|chi|lar)?\b)"
+    r")" % "|".join(map(re.escape, POPULAR_WORDS)),
+    flags=re.IGNORECASE | re.U,
+)
+
+
+def transliterate_preserving_protected_text(text, converter):
+    """Run converter only on text outside links, @handles, and fixed names."""
+    parts = []
+    last_end = 0
+
+    for match in PROTECTED_TEXT_RE.finditer(text):
+        parts.append(converter(text[last_end:match.start()]))
+        parts.append(match.group(0))
+        last_end = match.end()
+
+    parts.append(converter(text[last_end:]))
+    return "".join(parts)
 
 def normalize_latin_apostrophes(text):
     """Normalize Uzbek Latin apostrophe variants after o/g to one form."""
@@ -1230,7 +1263,7 @@ CYRILLIC_VOWELS = (
 )
 
 
-def to_cyrillic(text):
+def _to_cyrillic_unprotected(text):
     """Transliterate latin text to cyrillic  using the following rules:
     1. ye = е in the beginning of a word or after a vowel
     2. e = э in the beginning of a word or after a vowel
@@ -1352,7 +1385,7 @@ def to_cyrillic(text):
     return text
 
 
-def to_latin(text):
+def _to_latin_unprotected(text):
     """Transliterate cyrillic text to latin using the following rules:
     1. ц = s at the beginning of a word.
     ц = ts in the middle of a word after a vowel.
@@ -1406,6 +1439,14 @@ def to_latin(text):
 
     return text
 
+
+
+def to_cyrillic(text):
+    return transliterate_preserving_protected_text(text, _to_cyrillic_unprotected)
+
+
+def to_latin(text):
+    return transliterate_preserving_protected_text(text, _to_latin_unprotected)
 
 def transliterate(text, to_variant):
     if to_variant == 'cyrillic':
