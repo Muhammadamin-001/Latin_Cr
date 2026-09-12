@@ -18,7 +18,7 @@ import logging
 import os
 import secrets
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from motor.motor_asyncio import (
     AsyncIOMotorClient,
@@ -119,8 +119,8 @@ async def create_indexes() -> None:
         takrorlanmasligini ta'minlaydi va tez qidiruvga imkon beradi.
       - `expires_at` bo'yicha TTL indeks — muddati o'tgan fayl yozuvlarini
         MongoDB avtomatik ravishda o'chirib tashlaydi.
-      - `owner_id` bo'yicha oddiy indeks — foydalanuvchining fayllarini
-        tezroq topish uchun.
+      - `owner_id` va `created_at` bo'yicha qo'shma indeks — foydalanuvchining
+        fayllarini kabinetda sana bo'yicha tez sahifalash uchun.
     """
     collection = get_stored_files_collection()
     try:
@@ -137,8 +137,8 @@ async def create_indexes() -> None:
             expireAfterSeconds=0,
         )
         await collection.create_index(
-            [("owner_id", ASCENDING)],
-            name="idx_owner_id",
+            [("owner_id", ASCENDING), ("created_at", ASCENDING)],
+            name="idx_owner_created_at",
         )
         logger.info("📇 `stored_files` uchun indekslar muvaffaqiyatli tayyorlandi.")
     except PyMongoError as exc:
@@ -314,4 +314,60 @@ async def deactivate_file(file_id_str: str) -> bool:
         return success
     except PyMongoError as exc:
         logger.error("❌ Faylni faolsizlantirishda xatolik yuz berdi: %s", exc)
+        raise
+
+
+async def get_files_by_owner(
+    owner_id: int,
+    page: int = 1,
+    page_size: int = 5,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Foydalanuvchiga tegishli fayllarni sahifalab qaytaradi.
+
+    Fayllar eng yangisidan boshlab saralanadi. Faolsiz fayllar ham
+    qaytariladi, chunki kabinetda ularning holatini ko'rish kerak.
+    """
+    if page < 1:
+        raise ValueError("Sahifa raqami 1 dan kichik bo'lishi mumkin emas.")
+    if page_size < 1:
+        raise ValueError("Sahifadagi fayllar soni musbat bo'lishi kerak.")
+
+    collection = get_stored_files_collection()
+    query = {"owner_id": owner_id}
+    try:
+        total = await collection.count_documents(query)
+        cursor = (
+            collection.find(query)
+            .sort("created_at", -1)
+            .skip((page - 1) * page_size)
+            .limit(page_size)
+        )
+        files = await cursor.to_list(length=page_size)
+        return files, total
+    except PyMongoError as exc:
+        logger.error("❌ Foydalanuvchi fayllarini olishda xatolik yuz berdi: %s", exc)
+        raise
+
+
+async def get_owned_file(owner_id: int, file_id_str: str) -> Optional[Dict[str, Any]]:
+    """Token bo'yicha faqat berilgan foydalanuvchiga tegishli faylni qaytaradi."""
+    collection = get_stored_files_collection()
+    try:
+        return await collection.find_one({"owner_id": owner_id, "file_id_str": file_id_str})
+    except PyMongoError as exc:
+        logger.error("❌ Foydalanuvchi faylini olishda xatolik yuz berdi: %s", exc)
+        raise
+
+
+async def deactivate_owned_file(owner_id: int, file_id_str: str) -> bool:
+    """Faqat egasiga tegishli faol faylni faolsizlantiradi."""
+    collection = get_stored_files_collection()
+    try:
+        result = await collection.update_one(
+            {"owner_id": owner_id, "file_id_str": file_id_str, "is_active": True},
+            {"$set": {"is_active": False}},
+        )
+        return result.modified_count > 0
+    except PyMongoError as exc:
+        logger.error("❌ Foydalanuvchi faylini faolsizlantirishda xatolik yuz berdi: %s", exc)
         raise

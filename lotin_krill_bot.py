@@ -108,6 +108,123 @@ def get_back_markup():
     markup.add(InlineKeyboardButton("⬅️ Ortga", callback_data='back_to_main'))
     return markup
 
+CABINET_PAGE_SIZE = 5
+
+
+def get_file_vault_menu_markup():
+    """Fayl saqlagichning asosiy amallarini ko'rsatadi."""
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("📤 Fayl yuklash", callback_data='fv:upload'))
+    markup.add(InlineKeyboardButton("🗂 Shaxsiy kabinet", callback_data='cab:page:1'))
+    markup.add(InlineKeyboardButton("⬅️ Ortga", callback_data='back_to_main'))
+    return markup
+
+
+def format_cabinet_date(value):
+    """MongoDB sanasini kabinet uchun o'qilishi oson ko'rinishga o'tkazadi."""
+    if not isinstance(value, datetime):
+        return "Noma'lum"
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+
+
+def format_ttl_info(expires_at):
+    """Amal qilish muddatini va qolgan vaqtni Uzbekcha matnga aylantiradi."""
+    if expires_at is None:
+        return "♾️ Cheklanmagan"
+    if not isinstance(expires_at, datetime):
+        return "Noma'lum"
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    remaining = expires_at - datetime.now(timezone.utc)
+    expiry_date = format_cabinet_date(expires_at)
+    if remaining.total_seconds() <= 0:
+        return f"❌ Muddati tugagan ({expiry_date})"
+
+    remaining_minutes = int(remaining.total_seconds() // 60)
+    days, remaining_minutes = divmod(remaining_minutes, 24 * 60)
+    hours, minutes = divmod(remaining_minutes, 60)
+    parts = []
+    if days:
+        parts.append(f"{days} kun")
+    if hours or days:
+        parts.append(f"{hours} soat")
+    parts.append(f"{minutes} daqiqa")
+    return f"{expiry_date} (qolgan: {' '.join(parts)})"
+
+
+def get_cabinet_markup(files, page, total):
+    """Kabinetdagi fayllar uchun amallar va sahifalash tugmalarini yaratadi."""
+    markup = InlineKeyboardMarkup()
+    for file_doc in files:
+        token = file_doc["file_id_str"]
+        markup.row(
+            InlineKeyboardButton("📊 Statistika", callback_data=f'cab:stat:{page}:{token}'),
+            InlineKeyboardButton("🗑 O'chirish", callback_data=f'cab:delete:{page}:{token}'),
+        )
+
+    if page > 1:
+        markup.add(InlineKeyboardButton("⬅️ Orqaga", callback_data=f'cab:page:{page - 1}'))
+    if page * CABINET_PAGE_SIZE < total:
+        markup.add(InlineKeyboardButton("Keyingisi ➡️", callback_data=f'cab:page:{page + 1}'))
+    markup.add(InlineKeyboardButton("⬅️ Fayl saqlagich", callback_data='fv:menu'))
+    return markup
+
+
+def get_cabinet_text(files, page, total):
+    """Kabinetdagi sahifadagi fayllar ro'yxati matnini yaratadi."""
+    if not files:
+        return "🗂 *Shaxsiy kabinet*\n\nSiz hali birorta fayl yuklamagansiz."
+
+    total_pages = (total + CABINET_PAGE_SIZE - 1) // CABINET_PAGE_SIZE
+    lines = [
+        "🗂 *Shaxsiy kabinet*",
+        f"📄 Sahifa: {page}/{total_pages}",
+        "",
+    ]
+    for number, file_doc in enumerate(files, start=(page - 1) * CABINET_PAGE_SIZE + 1):
+        active_status = "✅ Faol" if file_doc.get("is_active") else "❌ Faol emas"
+        file_id = file_doc.get("file_id_str", "Noma'lum")
+        
+        lines.extend([
+            f"*{number}. Fayl*",
+            f"🔑 Fayl tokeni: `{file_id}`",
+            f"🗓 Yaratilgan sana: {format_cabinet_date(file_doc.get('created_at'))}",
+            f"⬇️ Yuklab olishlar: {file_doc.get('download_count', 0)}",
+            f"📌 Holati: {active_status}",
+            "",
+        ])
+    return "\n".join(lines).rstrip()
+
+
+def show_cabinet(chat_id, msg_id, owner_id, page):
+    """Foydalanuvchining kabinet sahifasini MongoDB'dan olib ko'rsatadi."""
+    try:
+        files, total = run_async(database.get_files_by_owner(owner_id, page, CABINET_PAGE_SIZE))
+        if total and not files and page > 1:
+            page = (total + CABINET_PAGE_SIZE - 1) // CABINET_PAGE_SIZE
+            files, total = run_async(database.get_files_by_owner(owner_id, page, CABINET_PAGE_SIZE))
+    except Exception as e:
+        print(f"Xatolik: kabinet fayllarini olishda muammo: {e}")
+        bot.edit_message_text(
+            "❌ Kabinet ma'lumotlarini yuklab bo'lmadi. Iltimos, birozdan so'ng urinib ko'ring.",
+            chat_id,
+            msg_id,
+        )
+        return
+
+    state[chat_id] = 'file_vault_cabinet'
+    bot.edit_message_text(
+        get_cabinet_text(files, page, total),
+        chat_id,
+        msg_id,
+        parse_mode="Markdown",
+        reply_markup=get_cabinet_markup(files, page, total),
+    )
+
+
 
 def get_link_settings_text(chat_id):
     """Joriy vaqtinchalik sessiya holatiga mos sozlamalar xulosa matnini quradi."""
@@ -420,7 +537,9 @@ def start_message(message):
     )
 
 
-@bot.callback_query_handler(func=lambda call: call.data in ['krill_latin', 'watermark', 'file_vault', 'back_to_main'])
+@bot.callback_query_handler(func=lambda call: call.data in [
+    'krill_latin', 'watermark', 'file_vault', 'fv:menu', 'fv:upload', 'back_to_main'
+])
 def handle_menu_navigation(call):
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
@@ -447,13 +566,22 @@ def handle_menu_navigation(call):
             parse_mode="Markdown",
             reply_markup=get_back_markup()
         )
-    elif call.data == 'file_vault':
+    elif call.data in ('file_vault', 'fv:menu'):
+        state[chat_id] = 'file_vault_menu'
+        bot.edit_message_text(
+            "📁 *Fayl saqlagich*\n\nKerakli amalni tanlang:",
+            chat_id,
+            msg_id,
+            parse_mode="Markdown",
+            reply_markup=get_file_vault_menu_markup(),
+        )
+    elif call.data == 'fv:upload':
         state[chat_id] = 'file_vault_upload'
         bot.edit_message_text(
             "📤 Saqlamoqchi bo'lgan faylingizni yuboring (rasm, video, hujjat yoki audio):",
             chat_id,
             msg_id,
-            reply_markup=get_back_markup()
+            reply_markup=get_back_markup(),
         )
     elif call.data == 'back_to_main':
         state[chat_id] = 'main'
@@ -470,6 +598,90 @@ def handle_menu_navigation(call):
             parse_mode="Markdown",
             reply_markup=get_main_services_markup()
         )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('cab:'))
+def handle_cabinet_actions(call):
+    """Shaxsiy kabinetdagi sahifalash, statistika va o'chirish amallarini bajaradi."""
+    chat_id = call.message.chat.id
+    msg_id = call.message.message_id
+    owner_id = call.from_user.id
+    parts = call.data.split(':')
+
+    if len(parts) == 3 and parts[1] == 'page':
+        try:
+            page = int(parts[2])
+        except ValueError:
+            bot.answer_callback_query(call.id, "⚠️ Sahifa raqami noto'g'ri.", show_alert=True)
+            return
+        if page < 1:
+            bot.answer_callback_query(call.id, "⚠️ Bunday sahifa mavjud emas.", show_alert=True)
+            return
+        bot.answer_callback_query(call.id)
+        show_cabinet(chat_id, msg_id, owner_id, page)
+        return
+
+    if len(parts) != 4 or parts[1] not in ('stat', 'delete'):
+        bot.answer_callback_query(call.id, "⚠️ Noma'lum kabinet amali.", show_alert=True)
+        return
+
+    try:
+        page = int(parts[2])
+    except ValueError:
+        bot.answer_callback_query(call.id, "⚠️ Sahifa raqami noto'g'ri.", show_alert=True)
+        return
+    token = parts[3]
+
+    if parts[1] == 'stat':
+        try:
+            file_doc = run_async(database.get_owned_file(owner_id, token))
+        except Exception as e:
+            print(f"Xatolik: fayl statistikasini olishda muammo: {e}")
+            file_doc = None
+
+        if file_doc is None:
+            bot.answer_callback_query(call.id, "⚠️ Fayl topilmadi.", show_alert=True)
+            return
+
+        active_status = "✅ Faol" if file_doc.get("is_active") else "❌ Faol emas"
+        pin_status = "✅ O'rnatilgan" if file_doc.get("pin_code") else "❌ O'rnatilmagan"
+        ttl_text = format_ttl_info(file_doc.get("expires_at"))
+
+        bot.answer_callback_query(call.id)
+        bot.edit_message_text(
+            "📊 *Fayl statistikasi*\n\n"
+            f"🔑 Fayl tokeni: `{file_doc.get('file_id_str')}`\n"
+            f"⬇️ Jami yuklab olishlar: {file_doc.get('download_count', 0)}\n"
+            f"📌 Faollik holati: {active_status}\n"
+            f"🔐 PIN-kod holati: {pin_status}\n"
+            f"⏳ Amal qilish muddati: {ttl_text}",
+            chat_id,
+            msg_id,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("⬅️ Kabinetga qaytish", callback_data=f'cab:page:{page}')
+            ),
+        )
+        return
+
+    try:
+        deleted = run_async(database.deactivate_owned_file(owner_id, token))
+    except Exception as e:
+        print(f"Xatolik: kabinet faylini o'chirishda muammo: {e}")
+        bot.answer_callback_query(
+            call.id,
+            "❌ Faylni o'chirib bo'lmadi. Iltimos, qaytadan urinib ko'ring.",
+            show_alert=True,
+        )
+        return
+
+    if deleted:
+        bot.answer_callback_query(call.id, "✅ Fayl faolsizlantirildi.")
+    else:
+        bot.answer_callback_query(call.id, "ℹ️ Fayl allaqachon faol emas yoki topilmadi.")
+    show_cabinet(chat_id, msg_id, owner_id, page)
+
+
 
 
 @bot.callback_query_handler(func=lambda call: call.data in [
