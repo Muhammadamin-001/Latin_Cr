@@ -336,16 +336,16 @@ async def get_files_by_owner(
     query = {"owner_id": owner_id}
     try:
         total = await collection.count_documents(query)
-        cursor = (
-            collection.find(query)
-            .sort("created_at", -1)
-            .skip((page - 1) * page_size)
-            .limit(page_size)
-        )
+        skip = (page - 1) * page_size
+        # Motor's ``find`` method returns a cursor immediately.  Cursor methods
+        # are chained first, then the result is awaited with ``to_list``.
+        cursor = collection.find(query).sort("created_at", -1).skip(skip).limit(page_size)
         files = await cursor.to_list(length=page_size)
         return files, total
-    except PyMongoError as exc:
-        logger.error("❌ Foydalanuvchi fayllarini olishda xatolik yuz berdi: %s", exc)
+    except Exception as e:
+        # Keep the original exception for the handler so it can show a useful UI
+        # message, while preserving the MongoDB failure in the application log.
+        logger.error(f"MongoDB Error: {e}")
         raise
 
 

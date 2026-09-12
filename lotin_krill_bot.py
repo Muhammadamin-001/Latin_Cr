@@ -5,16 +5,25 @@ import os
 import threading
 import asyncio
 import secrets
+import logging
 from datetime import datetime, timezone, timedelta
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.apihelper import ApiTelegramException as TelegramApiError
 from pymongo.errors import DuplicateKeyError
 import watermark
 import games
 import database
 
+logger = logging.getLogger(__name__)
+
 TOKEN = os.getenv("TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PRIVATE_STORAGE_CHANNEL_ID = int(os.getenv("PRIVATE_STORAGE_CHANNEL_ID", "0"))
+# ``STORAGE_CHANNEL_ID`` is the documented setting.  Keep the old setting as a
+# fallback so existing deployments do not stop working during the rename.
+STORAGE_CHANNEL_ID = int(
+    os.getenv("STORAGE_CHANNEL_ID", os.getenv("PRIVATE_STORAGE_CHANNEL_ID", "0"))
+)
+PRIVATE_STORAGE_CHANNEL_ID = STORAGE_CHANNEL_ID
 
 if not PRIVATE_STORAGE_CHANNEL_ID:
     # Bu o'zgaruvchisiz "Fayl Saqlagich" funksiyasi ishlay olmaydi,
@@ -72,6 +81,13 @@ except Exception as e:
 
 state = {}
 
+class FileVaultState:
+    """Named states used by the File Vault upload workflow."""
+
+    waiting_for_file = "file_vault_waiting_for_file"
+    settings = "file_vault_settings"
+
+
 # Foydalanuvchi fayl yuborayotgan vaqtdagi vaqtinchalik sessiya ma'lumotlari.
 # Kalit: chat_id, qiymat: {"owner_id", "telegram_files", "channel_message_ids",
 #                           "pin_code", "is_one_time", "expires_at", "expiry_label"}
@@ -109,6 +125,13 @@ def get_back_markup():
     return markup
 
 CABINET_PAGE_SIZE = 5
+STORAGE_CHANNEL_ERROR_MESSAGE = (
+    "⚠️ Baza kanaliga fayl yuklashda xatolik. Bot kanalda admin ekanligini va "
+    "STORAGE_CHANNEL_ID to'g'riligini tekshiring."
+)
+STORAGE_SAVE_ERROR_MESSAGE = (
+    "⚠️ Faylni baza kanaliga saqlab bo'lmadi. Administratorga murojaat qiling."
+)
 
 
 def get_file_vault_menu_markup():
@@ -209,7 +232,7 @@ def show_cabinet(chat_id, msg_id, owner_id, page):
     except Exception as e:
         print(f"Xatolik: kabinet fayllarini olishda muammo: {e}")
         bot.edit_message_text(
-            "❌ Kabinet ma'lumotlarini yuklab bo'lmadi. Iltimos, birozdan so'ng urinib ko'ring.",
+            "❌ Kabinet ma'lumotlarini yuklab bo'lmadi. Qayta urinib ko'ring.",
             chat_id,
             msg_id,
         )
@@ -297,13 +320,23 @@ def start_link_settings(chat_id, owner_id, telegram_files, channel_message_ids):
         "expires_at": None,
         "expiry_label": "♾️ Cheksiz",
     }
-    state[chat_id] = 'file_vault_settings'
+    state[chat_id] = FileVaultState.settings
     bot.send_message(
         chat_id,
-        get_link_settings_text(chat_id),
+        "✅ Fayl qabul qilindi! Endi havola sozlamalarini tanlang:\n\n"
+        + get_link_settings_text(chat_id),
         parse_mode="Markdown",
         reply_markup=get_link_settings_markup(chat_id)
     )
+
+
+def notify_storage_channel_error(chat_id, error):
+    """Log storage failures and give the uploader actionable next steps."""
+    logger.error("Storage channel upload failed: %s", error)
+    bot.send_message(chat_id, STORAGE_CHANNEL_ERROR_MESSAGE, reply_markup=get_back_markup())
+    # Retain the existing Uzbek storage-failure wording for users familiar with it.
+    bot.send_message(chat_id, STORAGE_SAVE_ERROR_MESSAGE, reply_markup=get_back_markup())
+
 
 
 def handle_media_group_item(message):
@@ -317,9 +350,13 @@ def handle_media_group_item(message):
     group_id = message.media_group_id
 
     try:
-        forwarded = bot.forward_message(PRIVATE_STORAGE_CHANNEL_ID, chat_id, message.message_id)
+        forwarded = bot.forward_message(STORAGE_CHANNEL_ID, chat_id, message.message_id)
+    except TelegramApiError as e:
+        notify_storage_channel_error(chat_id, e)
+        return
     except Exception as e:
-        print(f"Xatolik: albom elementini saqlash kanaliga forward qilishda muammo: {e}")
+        logger.exception("Unexpected error while forwarding album item")
+        bot.send_message(chat_id, "⚠️ Fayl qabul qilishda xatolik yuz berdi. Qaytadan urinib ko'ring.")
         return
 
     file_id, file_type = extract_file_info(forwarded)
@@ -576,7 +613,7 @@ def handle_menu_navigation(call):
             reply_markup=get_file_vault_menu_markup(),
         )
     elif call.data == 'fv:upload':
-        state[chat_id] = 'file_vault_upload'
+        state[chat_id] = FileVaultState.waiting_for_file
         bot.edit_message_text(
             "📤 Saqlamoqchi bo'lgan faylingizni yuboring (rasm, video, hujjat yoki audio):",
             chat_id,
@@ -906,25 +943,30 @@ def handle_watermark_upload(message):
             bot.send_message(chat_id, "Xatolik yuz berdi.", reply_markup=get_back_markup())
 
 
-@bot.message_handler(content_types=['photo', 'video', 'document', 'audio'])
+# pyTelegramBotAPI's ``content_types`` is the equivalent of aiogram's
+# ``F.document | F.photo | F.video | F.audio`` filter.
+@bot.message_handler(content_types=['document', 'photo', 'video', 'audio'])
 def handle_file_vault_upload(message):
     chat_id = message.chat.id
-    if state.get(chat_id) != 'file_vault_upload':
-        return
-
-    if message.media_group_id:
-        # Media albom (bir nechta fayl birga yuborilgan) — har bir elementni
-        # alohida qayta ishlab, hammasi yig'ilgach umumiy sessiya ochiladi.
-        handle_media_group_item(message)
+    if state.get(chat_id) != FileVaultState.waiting_for_file:
         return
 
     try:
-        forwarded = bot.forward_message(PRIVATE_STORAGE_CHANNEL_ID, chat_id, message.message_id)
+        if message.media_group_id:
+            # Media albom (bir nechta fayl birga yuborilgan) — har bir elementni
+            # alohida qayta ishlab, hammasi yig'ilgach umumiy sessiya ochiladi.
+            handle_media_group_item(message)
+            return
+
+        forwarded = bot.forward_message(STORAGE_CHANNEL_ID, chat_id, message.message_id)
+    except TelegramApiError as e:
+        notify_storage_channel_error(chat_id, e)
+        return
     except Exception as e:
-        print(f"Xatolik: faylni saqlash kanaliga forward qilishda muammo: {e}")
+        logger.exception("File reception failed")
         bot.send_message(
             chat_id,
-            "❌ Faylni saqlashda xatolik yuz berdi. Qaytadan urinib ko'ring.",
+            "⚠️ Fayl qabul qilishda xatolik yuz berdi. Qaytadan urinib ko'ring.",
             reply_markup=get_back_markup()
         )
         return
