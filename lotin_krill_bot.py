@@ -8,7 +8,6 @@ import secrets
 import logging
 from datetime import datetime, timezone, timedelta
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from telebot.apihelper import ApiTelegramException as TelegramApiError
 from pymongo.errors import DuplicateKeyError
 import watermark
 import games
@@ -85,7 +84,7 @@ class FileVaultState:
     """Named states used by the File Vault upload workflow."""
 
     waiting_for_file = "file_vault_waiting_for_file"
-    settings = "file_vault_settings"
+    configuring_link = "file_vault_configuring_link"
 
 
 # Foydalanuvchi fayl yuborayotgan vaqtdagi vaqtinchalik sessiya ma'lumotlari.
@@ -125,12 +124,15 @@ def get_back_markup():
     return markup
 
 CABINET_PAGE_SIZE = 5
-STORAGE_CHANNEL_ERROR_MESSAGE = (
-    "⚠️ Baza kanaliga fayl yuklashda xatolik. Bot kanalda admin ekanligini va "
-    "STORAGE_CHANNEL_ID to'g'riligini tekshiring."
+LINK_SETTINGS_HEADER = (
+    "✅ Fayl muvaffaqiyatli qabul qilindi!\n\n"
+    "Havola uchun xavfsizlik va kirish sozlamalarini tanlang:"
 )
-STORAGE_SAVE_ERROR_MESSAGE = (
-    "⚠️ Faylni baza kanaliga saqlab bo'lmadi. Administratorga murojaat qiling."
+STORAGE_CHANNEL_ERROR_MESSAGE = (
+    "❌ Faylni baza kanaliga yuklashda xatolik yuz berdi. Administrator bilan bog'laning."
+)
+CABINET_FETCH_ERROR_MESSAGE = (
+    "❌ Kabinet ma'lumotlarini yuklab bo'lmadi. Qayta urinib ko'ring."
 )
 
 
@@ -230,9 +232,9 @@ def show_cabinet(chat_id, msg_id, owner_id, page):
             page = (total + CABINET_PAGE_SIZE - 1) // CABINET_PAGE_SIZE
             files, total = run_async(database.get_files_by_owner(owner_id, page, CABINET_PAGE_SIZE))
     except Exception as e:
-        print(f"Xatolik: kabinet fayllarini olishda muammo: {e}")
+        logger.error(f"Cabinet fetch error: {e}")
         bot.edit_message_text(
-            "❌ Kabinet ma'lumotlarini yuklab bo'lmadi. Qayta urinib ko'ring.",
+            CABINET_FETCH_ERROR_MESSAGE,
             chat_id,
             msg_id,
         )
@@ -250,30 +252,31 @@ def show_cabinet(chat_id, msg_id, owner_id, page):
 
 
 def get_link_settings_text(chat_id):
-    """Joriy vaqtinchalik sessiya holatiga mos sozlamalar xulosa matnini quradi."""
+    """Joriy vaqtinchalik sessiya holatiga mos sozlamalar xulosasi."""
     data = pending_uploads.get(chat_id, {})
-    onetime_status = "✅ Yoqilgan" if data.get("is_one_time") else "❌ O'chirilgan"
-    pin_status = "✅ O'rnatilgan" if data.get("pin_code") else "❌ O'rnatilmagan"
-    expiry_status = data.get("expiry_label", "♾️ Cheksiz")
-
+    onetime_status = "YOQILGAN" if data.get("is_one_time") else "O'CHIQ"
+    pin_status = "o'rnatilgan" if data.get("pin_code") else "o'rnatilmagan"
     return (
-        "✅ Fayl(lar) muvaffaqiyatli qabul qilindi va xavfsiz saqlandi!\n\n"
-        "⚙️ *Havola sozlamalari:*\n"
-        f"💣 Bir martalik yuklash: {onetime_status}\n"
+        f"💣 Bir martalik: [{onetime_status}]\n"
         f"🔐 PIN-kod: {pin_status}\n"
-        f"⏳ Amal qilish muddati: {expiry_status}\n\n"
-        "Quyidagi tugmalar orqali sozlamalarni o'zgartiring:"
+       f"⏳ Amal qilish muddati: {data.get('expiry_label', '♾️ Cheksiz')}"
     )
 
 
 def get_link_settings_markup(chat_id):
-    """File Link Configuration Menu — havola yaratishdan oldingi sozlamalar klaviaturasi."""
+    """Havola xavfsizligi va kirish sozlamalari uchun inline klaviatura."""
+    is_one_time = pending_uploads.get(chat_id, {}).get("is_one_time", False)
+    one_time_label = "YOQILGAN" if is_one_time else "O'CHIQ"
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🔐 PIN-kod o'rnatish", callback_data='fv_set_pin'))
-    markup.add(InlineKeyboardButton("💣 Bir martalik yuklash", callback_data='fv_toggle_onetime'))
+    markup.add(InlineKeyboardButton("🔐 PIN-kod", callback_data='fv_set_pin'))
+    markup.add(
+        InlineKeyboardButton(
+            f"💣 Bir martalik: [{one_time_label}]",
+            callback_data='fv_toggle_onetime',
+        )
+    )
     markup.add(InlineKeyboardButton("⏳ Amal qilish muddati", callback_data='fv_expiry_menu'))
     markup.add(InlineKeyboardButton("🚀 Havolani yaratish", callback_data='fv_generate_link'))
-    markup.add(InlineKeyboardButton("❌ Bekor qilish", callback_data='fv_cancel'))
     return markup
 
 
@@ -306,13 +309,9 @@ def extract_file_info(msg):
 
 
 def start_link_settings(chat_id, owner_id, telegram_files, channel_message_ids):
-    """
-    Fayl(lar) yopiq kanalga muvaffaqiyatli forward qilingandan so'ng
-    vaqtinchalik sessiyani yaratadi va foydalanuvchini File Link
-    Configuration Menu'ga (havola sozlamalari) o'tkazadi.
-    """
+    """Forward muvaffaqiyatli bo'lgach sozlash sessiyasini ochadi."""
     pending_uploads[chat_id] = {
-        "owner_id": owner_id,
+        "owner_id": int(owner_id),
         "telegram_files": telegram_files,
         "channel_message_ids": channel_message_ids,
         "pin_code": None,
@@ -320,23 +319,18 @@ def start_link_settings(chat_id, owner_id, telegram_files, channel_message_ids):
         "expires_at": None,
         "expiry_label": "♾️ Cheksiz",
     }
-    state[chat_id] = FileVaultState.settings
+    state[chat_id] = FileVaultState.configuring_link
     bot.send_message(
         chat_id,
-        "✅ Fayl qabul qilindi! Endi havola sozlamalarini tanlang:\n\n"
-        + get_link_settings_text(chat_id),
-        parse_mode="Markdown",
-        reply_markup=get_link_settings_markup(chat_id)
+        LINK_SETTINGS_HEADER,
+        reply_markup=get_link_settings_markup(chat_id),
     )
 
 
 def notify_storage_channel_error(chat_id, error):
-    """Log storage failures and give the uploader actionable next steps."""
-    logger.error("Storage channel upload failed: %s", error)
+    """Forward xatosini logga yozib, foydalanuvchiga bitta aniq xabar yuboradi."""
+    logger.error(f"Forward error: {error}")
     bot.send_message(chat_id, STORAGE_CHANNEL_ERROR_MESSAGE, reply_markup=get_back_markup())
-    # Retain the existing Uzbek storage-failure wording for users familiar with it.
-    bot.send_message(chat_id, STORAGE_SAVE_ERROR_MESSAGE, reply_markup=get_back_markup())
-
 
 
 def handle_media_group_item(message):
@@ -351,12 +345,8 @@ def handle_media_group_item(message):
 
     try:
         forwarded = bot.forward_message(STORAGE_CHANNEL_ID, chat_id, message.message_id)
-    except TelegramApiError as e:
-        notify_storage_channel_error(chat_id, e)
-        return
     except Exception as e:
-        logger.exception("Unexpected error while forwarding album item")
-        bot.send_message(chat_id, "⚠️ Fayl qabul qilishda xatolik yuz berdi. Qaytadan urinib ko'ring.")
+        notify_storage_channel_error(chat_id, e)
         return
 
     file_id, file_type = extract_file_info(forwarded)
@@ -367,7 +357,7 @@ def handle_media_group_item(message):
     if entry is None:
         entry = {
             "chat_id": chat_id,
-            "owner_id": message.from_user.id,
+            "owner_id": int(message.from_user.id),
             "telegram_files": [],
             "channel_message_ids": [],
             "timer": None,
@@ -642,7 +632,7 @@ def handle_cabinet_actions(call):
     """Shaxsiy kabinetdagi sahifalash, statistika va o'chirish amallarini bajaradi."""
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
-    owner_id = call.from_user.id
+    owner_id = int(call.from_user.id)
     parts = call.data.split(':')
 
     if len(parts) == 3 and parts[1] == 'page':
@@ -862,7 +852,7 @@ def handle_text(message):
             return
 
         data["pin_code"] = pin
-        state[chat_id] = 'file_vault_settings'
+        state[chat_id] = FileVaultState.configuring_link
         bot.send_message(
             chat_id,
             "✅ PIN-kod muvaffaqiyatli o'rnatildi!\n\n" + get_link_settings_text(chat_id),
@@ -959,16 +949,8 @@ def handle_file_vault_upload(message):
             return
 
         forwarded = bot.forward_message(STORAGE_CHANNEL_ID, chat_id, message.message_id)
-    except TelegramApiError as e:
-        notify_storage_channel_error(chat_id, e)
-        return
     except Exception as e:
-        logger.exception("File reception failed")
-        bot.send_message(
-            chat_id,
-            "⚠️ Fayl qabul qilishda xatolik yuz berdi. Qaytadan urinib ko'ring.",
-            reply_markup=get_back_markup()
-        )
+        notify_storage_channel_error(chat_id, e)
         return
 
     file_id, file_type = extract_file_info(forwarded)
@@ -978,7 +960,7 @@ def handle_file_vault_upload(message):
 
     start_link_settings(
         chat_id,
-        message.from_user.id,
+        int(message.from_user.id),
         [{"file_id": file_id, "file_type": file_type}],
         [forwarded.message_id],
     )

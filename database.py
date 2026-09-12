@@ -194,6 +194,7 @@ async def create_file_record(
     if not telegram_files:
         raise ValueError("`telegram_files` ro'yxati bo'sh bo'lishi mumkin emas.")
 
+    owner_id = int(owner_id)
     collection = get_stored_files_collection()
     token = file_id_str or generate_file_token()
 
@@ -318,39 +319,38 @@ async def deactivate_file(file_id_str: str) -> bool:
 
 
 async def get_files_by_owner(
-    owner_id: int,
+    user_id: int,
     page: int = 1,
     page_size: int = 5,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """Foydalanuvchiga tegishli fayllarni sahifalab qaytaradi.
-
-    Fayllar eng yangisidan boshlab saralanadi. Faolsiz fayllar ham
-    qaytariladi, chunki kabinetda ularning holatini ko'rish kerak.
-    """
+    """Foydalanuvchining faol fayllarini eng yangisidan boshlab qaytaradi."""
     if page < 1:
         raise ValueError("Sahifa raqami 1 dan kichik bo'lishi mumkin emas.")
     if page_size < 1:
         raise ValueError("Sahifadagi fayllar soni musbat bo'lishi kerak.")
 
-    collection = get_stored_files_collection()
-    query = {"owner_id": owner_id}
     try:
+        owner_id = int(user_id)
+        collection = get_stored_files_collection()
+        query = {"owner_id": owner_id, "is_active": True}
         total = await collection.count_documents(query)
         skip = (page - 1) * page_size
-        # Motor's ``find`` method returns a cursor immediately.  Cursor methods
-        # are chained first, then the result is awaited with ``to_list``.
-        cursor = collection.find(query).sort("created_at", -1).skip(skip).limit(page_size)
+        cursor = (
+            collection.find(query)
+            .sort("created_at", -1)
+            .skip(skip)
+            .limit(page_size)
+        )
         files = await cursor.to_list(length=page_size)
         return files, total
     except Exception as e:
-        # Keep the original exception for the handler so it can show a useful UI
-        # message, while preserving the MongoDB failure in the application log.
-        logger.error(f"MongoDB Error: {e}")
+        logger.error(f"Cabinet fetch error: {e}")
         raise
 
 
 async def get_owned_file(owner_id: int, file_id_str: str) -> Optional[Dict[str, Any]]:
     """Token bo'yicha faqat berilgan foydalanuvchiga tegishli faylni qaytaradi."""
+    owner_id = int(owner_id)
     collection = get_stored_files_collection()
     try:
         return await collection.find_one({"owner_id": owner_id, "file_id_str": file_id_str})
@@ -361,6 +361,7 @@ async def get_owned_file(owner_id: int, file_id_str: str) -> Optional[Dict[str, 
 
 async def deactivate_owned_file(owner_id: int, file_id_str: str) -> bool:
     """Faqat egasiga tegishli faol faylni faolsizlantiradi."""
+    owner_id = int(owner_id)
     collection = get_stored_files_collection()
     try:
         result = await collection.update_one(
