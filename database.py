@@ -63,7 +63,10 @@ def get_client() -> AsyncIOMotorClient:
             raise RuntimeError(
                 "MONGO_URI muhit o'zgaruvchisi o'rnatilmagan. MongoDB'ga ulanib bo'lmaydi."
             )
-        _client = AsyncIOMotorClient(MONGO_URI)
+        # `tz_aware=True` — MongoDB'dan qaytadigan barcha `datetime` qiymatlari
+        # (masalan, `expires_at`, `created_at`) UTC bo'yicha tz-aware bo'lishini
+        # ta'minlaydi, shu orqali muddat tekshiruvlarida solishtirish xatosiz ishlaydi.
+        _client = AsyncIOMotorClient(MONGO_URI, tz_aware=True)
         logger.info("🔌 MongoDB client yaratildi.")
     return _client
 

@@ -77,6 +77,10 @@ state = {}
 #                           "pin_code", "is_one_time", "expires_at", "expiry_label"}
 pending_uploads = {}
 
+# Deep-link (`/start file_<TOKEN>`) orqali PIN-kod tekshirilayotgan foydalanuvchilar
+# uchun vaqtinchalik sessiya. Kalit: chat_id, qiymat: {"token": str}
+pending_downloads = {}
+
 # Media albom (bir nechta fayldan iborat xabar guruhi) elementlarini
 # vaqtincha to'plash uchun bufer. Kalit: media_group_id
 media_group_buffer = {}
@@ -314,11 +318,103 @@ def generate_and_send_link(chat_id, msg_id, data):
     )
 
 
+def deliver_files(chat_id, file_doc):
+    """
+    Fayl hujjatidagi (`stored_files`) barcha `telegram_files` elementlarini
+    ularning turiga (photo/video/document/audio) mos metod orqali
+    foydalanuvchiga yuboradi.
+    """
+    sender_map = {
+        'photo': bot.send_photo,
+        'video': bot.send_video,
+        'document': bot.send_document,
+        'audio': bot.send_audio,
+    }
+    for item in file_doc.get("telegram_files", []):
+        file_type = item.get("file_type")
+        file_id = item.get("file_id")
+        sender = sender_map.get(file_type, bot.send_document)
+        try:
+            sender(chat_id, file_id)
+        except Exception as e:
+            print(f"Xatolik: faylni yuborishda muammo ({file_type}, {file_id}): {e}")
+
+
+def complete_file_delivery(chat_id, token, file_doc):
+    """
+    PIN tekshiruvi (agar kerak bo'lsa) muvaffaqiyatli o'tgandan so'ng chaqiriladi:
+    fayl(lar)ni yuboradi, `download_count`ni oshiradi va bir martalik bo'lsa
+    faylni avtomatik faolsizlantiradi (bularning barchasi `increment_download`
+    ichida amalga oshiriladi).
+    """
+    deliver_files(chat_id, file_doc)
+
+    try:
+        run_async(database.increment_download(token))
+    except Exception as e:
+        print(f"Xatolik: yuklab olishlar sonini oshirishda muammo: {e}")
+
+    bot.send_message(chat_id, "✅ Fayl(lar) muvaffaqiyatli yuborildi!")
+
+
+def handle_deep_link_file(chat_id, token):
+    """
+    `/start file_<TOKEN>` chuqur havolasi (deep link) orqali kelgan so'rovni
+    qayta ishlaydi: tokenni MongoDB'dan qidiradi, faollik va muddatni
+    tekshiradi, kerak bo'lsa PIN-kod so'raydi, so'ng faylni yetkazib beradi.
+    """
+    try:
+        file_doc = run_async(database.get_file_by_token(token))
+    except Exception as e:
+        print(f"Xatolik: tokenni MongoDB'dan qidirishda muammo: {e}")
+        bot.send_message(chat_id, "⚠️ Ushbu havola mavjud emas yoki o'chirilgan.")
+        return
+
+    if not file_doc:
+        # `get_file_by_token` faqat `is_active: True` bo'lgan yozuvlarni qaytaradi,
+        # shuning uchun topilmaslik ham "mavjud emas", ham "o'chirilgan" holatini qamrab oladi.
+        bot.send_message(chat_id, "⚠️ Ushbu havola mavjud emas yoki o'chirilgan.")
+        return
+
+    expires_at = file_doc.get("expires_at")
+    if expires_at is not None:
+        now = datetime.now(timezone.utc)
+        if expires_at.tzinfo is None:
+            # Ehtiyot chorasi: agar biror sabab bilan naive datetime qaytsa,
+            # uni UTC deb hisoblaymiz (baza har doim UTC'da yozadi).
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < now:
+            bot.send_message(chat_id, "⚠️ Ushbu havolaning amal qilish muddati tugagan.")
+            return
+
+    if file_doc.get("pin_code"):
+        pending_downloads[chat_id] = {"token": token}
+        state[chat_id] = 'awaiting_download_pin'
+        bot.send_message(
+            chat_id,
+            "🔒 Ushbu fayl PIN-kod bilan himoyalangan. PIN-kodni kiriting:"
+        )
+        return
+
+    complete_file_delivery(chat_id, token, file_doc)
+
+
 @bot.message_handler(commands=['start'])
 def start_message(message):
-    state[message.chat.id] = 'main'
+    chat_id = message.chat.id
+
+    # `/start file_<TOKEN>` ko'rinishidagi chuqur havola (deep link) payload'ini ajratib olamiz.
+    parts = message.text.split(maxsplit=1)
+    payload = parts[1].strip() if len(parts) > 1 else ""
+
+    if payload.startswith("file_"):
+        token = payload[len("file_"):]
+        handle_deep_link_file(chat_id, token)
+        return
+
+    state[chat_id] = 'main'
     bot.send_message(
-        message.chat.id,
+        chat_id,
         "Bot xizmatlaridan birini tanlang:",
         reply_markup=get_main_services_markup()
     )
@@ -524,6 +620,38 @@ def handle_text(message):
             parse_mode="Markdown",
             reply_markup=get_link_settings_markup(chat_id)
         )
+    elif state.get(chat_id) == 'awaiting_download_pin':
+        pending = pending_downloads.get(chat_id)
+        if pending is None:
+            state[chat_id] = 'main'
+            bot.send_message(
+                chat_id,
+                "⚠️ Faol sessiya topilmadi. Havolani qaytadan oching.",
+                reply_markup=get_main_services_markup()
+            )
+            return
+
+        token = pending["token"]
+        try:
+            file_doc = run_async(database.get_file_by_token(token))
+        except Exception as e:
+            print(f"Xatolik: tokenni qayta tekshirishda muammo: {e}")
+            file_doc = None
+
+        if not file_doc:
+            pending_downloads.pop(chat_id, None)
+            state[chat_id] = 'main'
+            bot.send_message(chat_id, "⚠️ Ushbu havola mavjud emas yoki o'chirilgan.")
+            return
+
+        entered_pin = message.text.strip()
+        if entered_pin != file_doc.get("pin_code"):
+            bot.send_message(chat_id, "❌ PIN-kod noto'g'ri. Qaytadan urinib ko'ring:")
+            return
+
+        pending_downloads.pop(chat_id, None)
+        state[chat_id] = 'main'
+        complete_file_delivery(chat_id, token, file_doc)
     elif state.get(chat_id) == 'main':
         bot.send_message(
             chat_id,
