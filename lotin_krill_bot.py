@@ -3,7 +3,7 @@ import telebot
 from flask import Flask, request
 import os
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-import Hazil_rasm
+import watermark
 import games
 
 TOKEN = os.getenv("TOKEN")
@@ -14,21 +14,25 @@ state = {}
 
 app = Flask(__name__)
 
+
 def get_main_services_markup():
     markup = InlineKeyboardMarkup()
     markup.row(
         InlineKeyboardButton("🇺🇿 Krill-Lotin", callback_data='krill_latin'),
-        InlineKeyboardButton("🖼️ Rasmga matn", callback_data='hazil_rasm')
+        InlineKeyboardButton("🖼 Watermark — Mualliflik huquqi", callback_data='watermark')
     )
     markup.add(InlineKeyboardButton("🎮 O'yinlar", callback_data='game:open'))
     return markup
 
+
 games_controller = games.register(bot, get_main_services_markup, state)
+
 
 def get_back_markup():
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("⬅️ Ortga", callback_data='back_to_main'))
     return markup
+
 
 @bot.message_handler(commands=['start'])
 def start_message(message):
@@ -39,11 +43,12 @@ def start_message(message):
         reply_markup=get_main_services_markup()
     )
 
-@bot.callback_query_handler(func=lambda call: call.data in ['krill_latin', 'hazil_rasm', 'back_to_main'])
+
+@bot.callback_query_handler(func=lambda call: call.data in ['krill_latin', 'watermark', 'back_to_main'])
 def handle_menu_navigation(call):
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
-    
+
     if call.data == 'krill_latin':
         state[chat_id] = 'krill_latin'
         bot.edit_message_text(
@@ -53,12 +58,17 @@ def handle_menu_navigation(call):
             msg_id,
             reply_markup=get_back_markup()
         )
-    elif call.data == 'hazil_rasm':
-        state[chat_id] = 'hazil_rasm'
+    elif call.data == 'watermark':
+        state[chat_id] = 'watermark'
         bot.edit_message_text(
-            "⏳ Rasm va kommentiga matn yozib yuboring. Matnni qo'shib rasmga effekt beraman! ✨",
+            "🖼 *Watermark — Mualliflik huquqi*\n\n"
+            "📤 Himoyalamoqchi bo'lgan rasmni yuboring.\n"
+            "✍️ Izoh (caption) qismiga watermark sifatida chiqishini xohlagan matnni yozing "
+            "(masalan: kanalingiz nomi yoki istalgan matn).\n\n"
+            "ℹ️ Izoh qoldirmasangiz, standart watermark matni qo'yiladi.",
             chat_id,
             msg_id,
+            parse_mode="Markdown",
             reply_markup=get_back_markup()
         )
     elif call.data == 'back_to_main':
@@ -77,13 +87,14 @@ def handle_menu_navigation(call):
             reply_markup=get_main_services_markup()
         )
 
+
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
     chat_id = message.chat.id
-    
+
     if games_controller["process_text"](message):
         return
-    
+
     if state.get(chat_id) == 'krill_latin':
         msg = message.text
         if contains_cyrillic(msg):
@@ -105,12 +116,12 @@ def handle_text(message):
             reply_markup=get_main_services_markup()
         )
 
+
 @bot.message_handler(content_types=['photo', 'document'])
 def handle_photo_or_document(message):
     chat_id = message.chat.id
-    if state.get(chat_id) == 'hazil_rasm':
-        user_text = message.caption if message.caption else "⚠️ DIQQAT! SOXTA VIDEO USTASI"
-        user_text = Hazil_rasm.clean_text(user_text)
+    if state.get(chat_id) == 'watermark':
+        user_text = message.caption if message.caption else watermark.DEFAULT_WATERMARK_TEXT
 
         try:
             if message.content_type == 'photo':
@@ -118,17 +129,27 @@ def handle_photo_or_document(message):
             elif message.content_type == 'document' and message.document.mime_type.startswith('image/'):
                 file_id = message.document.file_id
             else:
+                bot.send_message(
+                    chat_id,
+                    "⚠️ Iltimos, rasm formatidagi fayl yuboring.",
+                    reply_markup=get_back_markup()
+                )
                 return
 
             file_info = bot.get_file(file_id)
             downloaded_file = bot.download_file(file_info.file_path)
-            img = Hazil_rasm.open_image(downloaded_file)
-            img = Hazil_rasm.apply_effects(img)
-            bio = Hazil_rasm.draw_caption(img, user_text)
-            bot.send_photo(chat_id, bio, caption="Tayyor! 🚀", reply_markup=get_back_markup())
+            img = watermark.open_image(downloaded_file)
+            bio = watermark.apply_watermark(img, user_text)
+            bot.send_photo(
+                chat_id,
+                bio,
+                caption="✅ Watermark muvaffaqiyatli qo'shildi!",
+                reply_markup=get_back_markup()
+            )
         except Exception as e:
             print(f"Xatolik: {e}")
             bot.send_message(chat_id, "Xatolik yuz berdi.", reply_markup=get_back_markup())
+
 
 @app.route('/' + TOKEN, methods=['POST'])
 def webhook():
@@ -137,9 +158,11 @@ def webhook():
     bot.process_new_updates([update])
     return "ok", 200
 
+
 @app.route('/')
 def index():
     return "Bot is running"
+
 
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 5000))
