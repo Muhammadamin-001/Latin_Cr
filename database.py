@@ -148,8 +148,11 @@ async def create_indexes() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _generate_file_token(length: int = 12) -> str:
-    """Fayl havolasi uchun (`start=file_TOKEN`) mo'ljallangan noyob token yaratadi."""
+def generate_file_token(length: int = 8) -> str:
+    """
+    Fayl havolasi uchun (`start=file_TOKEN`) mo'ljallangan noyob, URL-xavfsiz
+    token yaratadi. Standart uzunlik — 8 (`secrets.token_urlsafe(8)`).
+    """
     return secrets.token_urlsafe(length)
 
 
@@ -157,6 +160,7 @@ async def create_file_record(
     owner_id: int,
     telegram_files: List[Dict[str, str]],
     channel_message_ids: List[int],
+    file_id_str: Optional[str] = None,
     pin_code: Optional[str] = None,
     is_one_time: bool = False,
     expires_at: Optional[datetime] = None,
@@ -169,6 +173,12 @@ async def create_file_record(
         telegram_files: `[{"file_id": str, "file_type": str}, ...]` ko'rinishidagi
             ro'yxat (bitta fayl yoki media albom uchun bir nechta element bo'lishi mumkin).
         channel_message_ids: Fayllar saqlangan yopiq kanaldagi xabar ID'lari ro'yxati.
+        file_id_str: Havola tokeni. Berilmasa (`None`), avtomatik ravishda
+            `generate_file_token()` orqali yaratiladi. Chaqiruvchi tomon
+            (masalan, bot handleri) o'z tokenini berishi ham mumkin —
+            bu holda MongoDB'dagi unikal indeks tokenning
+            takrorlanmasligini kafolatlaydi (takrorlansa `DuplicateKeyError`
+            qaytadi, chaqiruvchi yangi token bilan qayta urinishi kerak).
         pin_code: Ixtiyoriy xavfsizlik PIN kodi (kerak bo'lmasa `None`).
         is_one_time: `True` bo'lsa, fayl birinchi marta yuklab olingandan so'ng
             o'z-o'zini yo'q qiladi (self-destruct).
@@ -176,13 +186,13 @@ async def create_file_record(
             `None` bo'lsa, fayl muddatsiz saqlanadi.
 
     Qaytaradi:
-        Yangi yaratilgan yozuvga tegishli noyob token (`file_id_str`).
+        Yozuvga tegishli noyob token (`file_id_str`).
     """
     if not telegram_files:
         raise ValueError("`telegram_files` ro'yxati bo'sh bo'lishi mumkin emas.")
 
     collection = get_stored_files_collection()
-    token = _generate_file_token()
+    token = file_id_str or generate_file_token()
 
     document = {
         "file_id_str": token,

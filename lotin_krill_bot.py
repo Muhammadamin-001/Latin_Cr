@@ -3,10 +3,14 @@ import telebot
 from flask import Flask, request
 import os
 import threading
+import asyncio
+import secrets
 from datetime import datetime, timezone, timedelta
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pymongo.errors import DuplicateKeyError
 import watermark
 import games
+import database
 
 TOKEN = os.getenv("TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -21,6 +25,51 @@ if not PRIVATE_STORAGE_CHANNEL_ID:
     )
 
 bot = telebot.TeleBot(TOKEN)
+
+# ---------------------------------------------------------------------------
+# `database.py`dagi asinxron (`async`) funksiyalarni sinxron pyTelegramBotAPI
+# handlerlari ichida xavfsiz chaqirish uchun doimiy background event loop.
+# ---------------------------------------------------------------------------
+
+_background_loop = asyncio.new_event_loop()
+
+
+def _run_background_loop(loop):
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+
+_background_thread = threading.Thread(
+    target=_run_background_loop, args=(_background_loop,), daemon=True
+)
+_background_thread.start()
+
+
+def run_async(coro):
+    """
+    `database.py`dagi `async` funksiyalarni sinxron bot handlerlari ichida
+    xavfsiz ishga tushiradi. Barcha chaqiruvlar bitta doimiy background
+    event loop threadida bajariladi — shu sababli MongoDB (`motor`) clienti
+    bilan mos keladi va "different event loop" xatoliklari oldini oladi.
+    """
+    future = asyncio.run_coroutine_threadsafe(coro, _background_loop)
+    return future.result()
+
+
+try:
+    run_async(database.connect_to_mongo())
+except Exception as e:
+    print(
+        f"⚠️ MongoDB'ga ulanishda muammo yuz berdi (bot baribir ishga tushadi): {e}"
+    )
+
+try:
+    BOT_USERNAME = bot.get_me().username
+except Exception as e:
+    print(f"⚠️ Bot username'ini olishda muammo yuz berdi: {e}")
+    BOT_USERNAME = None
+
+
 state = {}
 
 # Foydalanuvchi fayl yuborayotgan vaqtdagi vaqtinchalik sessiya ma'lumotlari.
@@ -56,39 +105,45 @@ def get_back_markup():
     return markup
 
 
-def get_link_settings_markup(chat_id):
-    """Berilgan chat uchun vaqtinchalik sessiya holatiga mos Link Settings klaviaturasini quradi."""
+def get_link_settings_text(chat_id):
+    """Joriy vaqtinchalik sessiya holatiga mos sozlamalar xulosa matnini quradi."""
     data = pending_uploads.get(chat_id, {})
+    onetime_status = "✅ Yoqilgan" if data.get("is_one_time") else "❌ O'chirilgan"
+    pin_status = "✅ O'rnatilgan" if data.get("pin_code") else "❌ O'rnatilmagan"
+    expiry_status = data.get("expiry_label", "♾️ Cheksiz")
 
-    onetime_label = (
-        "🔥 Bir martalik havola: ✅ Yoqilgan"
-        if data.get("is_one_time")
-        else "🔥 Bir martalik havola: ❌ O'chirilgan"
+    return (
+        "✅ Fayl(lar) muvaffaqiyatli qabul qilindi va xavfsiz saqlandi!\n\n"
+        "⚙️ *Havola sozlamalari:*\n"
+        f"💣 Bir martalik yuklash: {onetime_status}\n"
+        f"🔐 PIN-kod: {pin_status}\n"
+        f"⏳ Amal qilish muddati: {expiry_status}\n\n"
+        "Quyidagi tugmalar orqali sozlamalarni o'zgartiring:"
     )
-    pin_label = (
-        "🔐 PIN-kod: ✅ O'rnatilgan (o'zgartirish)"
-        if data.get("pin_code")
-        else "🔐 PIN-kod qo'yish"
-    )
-    expiry_label = f"⏳ Amal qilish muddati: {data.get('expiry_label', '♾️ Cheksiz')}"
 
+
+def get_link_settings_markup(chat_id):
+    """File Link Configuration Menu — havola yaratishdan oldingi sozlamalar klaviaturasi."""
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton(onetime_label, callback_data='fv_toggle_onetime'))
-    markup.add(InlineKeyboardButton(expiry_label, callback_data='fv_expiry_menu'))
-    markup.add(InlineKeyboardButton(pin_label, callback_data='fv_set_pin'))
-    markup.add(InlineKeyboardButton("✅ Havolani yaratish", callback_data='fv_generate_link'))
+    markup.add(InlineKeyboardButton("🔐 PIN-kod o'rnatish", callback_data='fv_set_pin'))
+    markup.add(InlineKeyboardButton("💣 Bir martalik yuklash", callback_data='fv_toggle_onetime'))
+    markup.add(InlineKeyboardButton("⏳ Amal qilish muddati", callback_data='fv_expiry_menu'))
+    markup.add(InlineKeyboardButton("🚀 Havolani yaratish", callback_data='fv_generate_link'))
     markup.add(InlineKeyboardButton("❌ Bekor qilish", callback_data='fv_cancel'))
     return markup
 
 
 def get_expiry_options_markup():
+    """Amal qilish muddatini tanlash uchun ichki (inline) sozlamalar submenyusi."""
     markup = InlineKeyboardMarkup()
     markup.row(
-        InlineKeyboardButton("1 kun", callback_data='fv_expiry_1'),
-        InlineKeyboardButton("7 kun", callback_data='fv_expiry_7'),
-        InlineKeyboardButton("30 kun", callback_data='fv_expiry_30'),
+        InlineKeyboardButton("1 soat", callback_data='fv_expiry_1h'),
+        InlineKeyboardButton("24 soat", callback_data='fv_expiry_24h'),
     )
-    markup.add(InlineKeyboardButton("♾️ Cheksiz", callback_data='fv_expiry_none'))
+    markup.row(
+        InlineKeyboardButton("7 kun", callback_data='fv_expiry_7d'),
+        InlineKeyboardButton("♾️ Cheksiz", callback_data='fv_expiry_none'),
+    )
     markup.add(InlineKeyboardButton("⬅️ Ortga", callback_data='fv_settings_back'))
     return markup
 
@@ -109,8 +164,8 @@ def extract_file_info(msg):
 def start_link_settings(chat_id, owner_id, telegram_files, channel_message_ids):
     """
     Fayl(lar) yopiq kanalga muvaffaqiyatli forward qilingandan so'ng
-    vaqtinchalik sessiyani yaratadi va foydalanuvchini Link Settings
-    (havola sozlamalari) menyusiga o'tkazadi.
+    vaqtinchalik sessiyani yaratadi va foydalanuvchini File Link
+    Configuration Menu'ga (havola sozlamalari) o'tkazadi.
     """
     pending_uploads[chat_id] = {
         "owner_id": owner_id,
@@ -124,8 +179,8 @@ def start_link_settings(chat_id, owner_id, telegram_files, channel_message_ids):
     state[chat_id] = 'file_vault_settings'
     bot.send_message(
         chat_id,
-        "✅ Fayl(lar) muvaffaqiyatli qabul qilindi va xavfsiz saqlandi!\n\n"
-        "⚙️ Endi ushbu fayl uchun havola sozlamalarini tanlang:",
+        get_link_settings_text(chat_id),
+        parse_mode="Markdown",
         reply_markup=get_link_settings_markup(chat_id)
     )
 
@@ -182,6 +237,80 @@ def finalize_media_group(group_id):
         entry["owner_id"],
         entry["telegram_files"],
         entry["channel_message_ids"],
+    )
+
+
+def generate_and_send_link(chat_id, msg_id, data):
+    """
+    "🚀 Havolani yaratish" bosilganda chaqiriladi:
+      1) `secrets.token_urlsafe(8)` bilan noyob token yaratadi.
+      2) Fayl yozuvini `database.create_file_record()` orqali MongoDB'ga saqlaydi
+         (juda kam ehtimollik bilan token takrorlansa, yangi token bilan qayta urinadi).
+      3) Yakuniy ulashish havolasini va sozlamalar xulosasini foydalanuvchiga yuboradi.
+    """
+    max_attempts = 5
+    saved_token = None
+
+    for _ in range(max_attempts):
+        candidate_token = secrets.token_urlsafe(8)
+        try:
+            run_async(
+                database.create_file_record(
+                    owner_id=data["owner_id"],
+                    telegram_files=data["telegram_files"],
+                    channel_message_ids=data["channel_message_ids"],
+                    file_id_str=candidate_token,
+                    pin_code=data.get("pin_code"),
+                    is_one_time=data.get("is_one_time", False),
+                    expires_at=data.get("expires_at"),
+                )
+            )
+            saved_token = candidate_token
+            break
+        except DuplicateKeyError:
+            # Ehtimoli juda past, lekin token band bo'lib chiqsa — yangisini sinaymiz.
+            continue
+        except Exception as e:
+            print(f"Xatolik: fayl yozuvini MongoDB'ga saqlashda muammo: {e}")
+            bot.edit_message_text(
+                "❌ Havola yaratishda xatolik yuz berdi. Iltimos, birozdan so'ng qaytadan urinib ko'ring.",
+                chat_id,
+                msg_id,
+            )
+            return
+
+    if saved_token is None:
+        bot.edit_message_text(
+            "❌ Noyob havola yaratib bo'lmadi. Iltimos, qaytadan urinib ko'ring.",
+            chat_id,
+            msg_id,
+        )
+        return
+
+    username_part = BOT_USERNAME or "SizningBotingiz"
+    link = f"https://t.me/{username_part}?start=file_{saved_token}"
+
+    onetime_text = "✅ Ha" if data.get("is_one_time") else "❌ Yo'q"
+    pin_text = "✅ O'rnatilgan" if data.get("pin_code") else "❌ Yo'q"
+    expiry_text = data.get("expiry_label", "♾️ Cheksiz")
+
+    recap = (
+        "🎉 *Havola muvaffaqiyatli yaratildi!*\n\n"
+        f"🔗 Havola: `{link}`\n\n"
+        "📋 *Sozlamalar xulosasi:*\n"
+        f"💣 Bir martalik yuklash: {onetime_text}\n"
+        f"🔐 PIN-kod: {pin_text}\n"
+        f"⏳ Amal qilish muddati: {expiry_text}"
+    )
+
+    pending_uploads.pop(chat_id, None)
+    state[chat_id] = 'main'
+
+    bot.edit_message_text(recap, chat_id, msg_id, parse_mode="Markdown")
+    bot.send_message(
+        chat_id,
+        "💼 Bot xizmatlaridan birini tanlang:",
+        reply_markup=get_main_services_markup()
     )
 
 
@@ -248,8 +377,8 @@ def handle_menu_navigation(call):
 
 
 @bot.callback_query_handler(func=lambda call: call.data in [
-    'fv_toggle_onetime', 'fv_set_pin', 'fv_expiry_menu', 'fv_expiry_1', 'fv_expiry_7',
-    'fv_expiry_30', 'fv_expiry_none', 'fv_settings_back', 'fv_generate_link', 'fv_cancel'
+    'fv_toggle_onetime', 'fv_set_pin', 'fv_expiry_menu', 'fv_expiry_1h', 'fv_expiry_24h',
+    'fv_expiry_7d', 'fv_expiry_none', 'fv_settings_back', 'fv_generate_link', 'fv_cancel'
 ])
 def handle_file_vault_settings(call):
     chat_id = call.message.chat.id
@@ -267,7 +396,13 @@ def handle_file_vault_settings(call):
     if call.data == 'fv_toggle_onetime':
         data["is_one_time"] = not data["is_one_time"]
         bot.answer_callback_query(call.id)
-        bot.edit_message_reply_markup(chat_id, msg_id, reply_markup=get_link_settings_markup(chat_id))
+        bot.edit_message_text(
+            get_link_settings_text(chat_id),
+            chat_id,
+            msg_id,
+            parse_mode="Markdown",
+            reply_markup=get_link_settings_markup(chat_id)
+        )
 
     elif call.data == 'fv_expiry_menu':
         bot.answer_callback_query(call.id)
@@ -278,31 +413,35 @@ def handle_file_vault_settings(call):
             reply_markup=get_expiry_options_markup()
         )
 
-    elif call.data in ('fv_expiry_1', 'fv_expiry_7', 'fv_expiry_30', 'fv_expiry_none'):
-        days_map = {'fv_expiry_1': (1, "1 kun"), 'fv_expiry_7': (7, "7 kun"), 'fv_expiry_30': (30, "30 kun")}
+    elif call.data in ('fv_expiry_1h', 'fv_expiry_24h', 'fv_expiry_7d', 'fv_expiry_none'):
+        expiry_map = {
+            'fv_expiry_1h': (timedelta(hours=1), "1 soat"),
+            'fv_expiry_24h': (timedelta(hours=24), "24 soat"),
+            'fv_expiry_7d': (timedelta(days=7), "7 kun"),
+        }
         if call.data == 'fv_expiry_none':
             data["expires_at"] = None
             data["expiry_label"] = "♾️ Cheksiz"
         else:
-            days, label = days_map[call.data]
-            data["expires_at"] = datetime.now(timezone.utc) + timedelta(days=days)
+            delta, label = expiry_map[call.data]
+            data["expires_at"] = datetime.now(timezone.utc) + delta
             data["expiry_label"] = label
         bot.answer_callback_query(call.id)
         bot.edit_message_text(
-            "✅ Fayl(lar) muvaffaqiyatli qabul qilindi va xavfsiz saqlandi!\n\n"
-            "⚙️ Endi ushbu fayl uchun havola sozlamalarini tanlang:",
+            get_link_settings_text(chat_id),
             chat_id,
             msg_id,
+            parse_mode="Markdown",
             reply_markup=get_link_settings_markup(chat_id)
         )
 
     elif call.data == 'fv_settings_back':
         bot.answer_callback_query(call.id)
         bot.edit_message_text(
-            "✅ Fayl(lar) muvaffaqiyatli qabul qilindi va xavfsiz saqlandi!\n\n"
-            "⚙️ Endi ushbu fayl uchun havola sozlamalarini tanlang:",
+            get_link_settings_text(chat_id),
             chat_id,
             msg_id,
+            parse_mode="Markdown",
             reply_markup=get_link_settings_markup(chat_id)
         )
 
@@ -310,19 +449,15 @@ def handle_file_vault_settings(call):
         state[chat_id] = 'file_vault_awaiting_pin'
         bot.answer_callback_query(call.id)
         bot.edit_message_text(
-            "🔐 4 tadan 8 tagacha raqamdan iborat PIN-kodni yuboring:",
+            "🔐 4 xonali raqamli PIN-kodni kiriting:",
             chat_id,
             msg_id,
             reply_markup=get_back_markup()
         )
 
     elif call.data == 'fv_generate_link':
-        # Havola yaratish va MongoDB'ga yozish logikasi keyingi bosqichda qo'shiladi.
-        bot.answer_callback_query(
-            call.id,
-            "🚧 Havola yaratish funksiyasi keyingi bosqichda qo'shiladi.",
-            show_alert=True
-        )
+        bot.answer_callback_query(call.id)
+        generate_and_send_link(chat_id, msg_id, data)
 
     elif call.data == 'fv_cancel':
         pending_uploads.pop(chat_id, None)
@@ -363,11 +498,10 @@ def handle_text(message):
         )
     elif state.get(chat_id) == 'file_vault_awaiting_pin':
         pin = message.text.strip()
-        if not pin.isdigit() or not (4 <= len(pin) <= 8):
+        if not pin.isdigit() or len(pin) != 4:
             bot.send_message(
                 chat_id,
-                "⚠️ PIN-kod faqat 4 tadan 8 tagacha raqamdan iborat bo'lishi kerak. "
-                "Qaytadan kiriting:",
+                "⚠️ PIN-kod aynan 4 ta raqamdan iborat bo'lishi kerak. Qaytadan kiriting:",
                 reply_markup=get_back_markup()
             )
             return
@@ -386,7 +520,8 @@ def handle_text(message):
         state[chat_id] = 'file_vault_settings'
         bot.send_message(
             chat_id,
-            "✅ PIN-kod muvaffaqiyatli o'rnatildi!\n\n⚙️ Havola sozlamalari:",
+            "✅ PIN-kod muvaffaqiyatli o'rnatildi!\n\n" + get_link_settings_text(chat_id),
+            parse_mode="Markdown",
             reply_markup=get_link_settings_markup(chat_id)
         )
     elif state.get(chat_id) == 'main':
