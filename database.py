@@ -343,8 +343,8 @@ async def get_files_by_owner(
         )
         files = await cursor.to_list(length=page_size)
         return files, total
-    except Exception as e:
-        logger.error(f"Cabinet fetch error: {e}")
+    except Exception:
+        logger.exception("Cabinet fetch error (owner_id=%s, page=%s)", user_id, page)
         raise
 
 

@@ -13,6 +13,12 @@ import watermark
 import games
 import database
 
+# Render kabi platformalarda barcha xatoliklar (to'liq traceback bilan)
+# konsol loglarida ko'rinishi uchun logging'ni aniq sozlaymiz.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TOKEN")
@@ -212,7 +218,7 @@ def get_cabinet_text(files, page, total):
     for number, file_doc in enumerate(files, start=(page - 1) * CABINET_PAGE_SIZE + 1):
         active_status = "✅ Faol" if file_doc.get("is_active") else "❌ Faol emas"
         file_id = file_doc.get("file_id_str", "Noma'lum")
-        
+
         lines.extend([
             f"*{number}. Fayl*",
             f"🔑 Fayl tokeni: `{file_id}`",
@@ -231,8 +237,8 @@ def show_cabinet(chat_id, msg_id, owner_id, page):
         if total and not files and page > 1:
             page = (total + CABINET_PAGE_SIZE - 1) // CABINET_PAGE_SIZE
             files, total = run_async(database.get_files_by_owner(owner_id, page, CABINET_PAGE_SIZE))
-    except Exception as e:
-        logger.error(f"Cabinet fetch error: {e}")
+    except Exception:
+        logger.exception("Cabinet fetch error (owner_id=%s, page=%s)", owner_id, page)
         bot.edit_message_text(
             CABINET_FETCH_ERROR_MESSAGE,
             chat_id,
@@ -250,7 +256,6 @@ def show_cabinet(chat_id, msg_id, owner_id, page):
     )
 
 
-
 def get_link_settings_text(chat_id):
     """Joriy vaqtinchalik sessiya holatiga mos sozlamalar xulosasi."""
     data = pending_uploads.get(chat_id, {})
@@ -259,7 +264,7 @@ def get_link_settings_text(chat_id):
     return (
         f"💣 Bir martalik: [{onetime_status}]\n"
         f"🔐 PIN-kod: {pin_status}\n"
-       f"⏳ Amal qilish muddati: {data.get('expiry_label', '♾️ Cheksiz')}"
+        f"⏳ Amal qilish muddati: {data.get('expiry_label', '♾️ Cheksiz')}"
     )
 
 
@@ -328,8 +333,8 @@ def start_link_settings(chat_id, owner_id, telegram_files, channel_message_ids):
 
 
 def notify_storage_channel_error(chat_id, error):
-    """Forward xatosini logga yozib, foydalanuvchiga bitta aniq xabar yuboradi."""
-    logger.error(f"Forward error: {error}")
+    """Forward xatosini to'liq traceback bilan logga yozib, foydalanuvchiga bitta aniq xabar yuboradi."""
+    logger.exception("Forward error (chat_id=%s): %s", chat_id, error)
     bot.send_message(chat_id, STORAGE_CHANNEL_ERROR_MESSAGE, reply_markup=get_back_markup())
 
 
@@ -418,8 +423,8 @@ def generate_and_send_link(chat_id, msg_id, data):
         except DuplicateKeyError:
             # Ehtimoli juda past, lekin token band bo'lib chiqsa — yangisini sinaymiz.
             continue
-        except Exception as e:
-            print(f"Xatolik: fayl yozuvini MongoDB'ga saqlashda muammo: {e}")
+        except Exception:
+            logger.exception("Havola yaratishda muammo (chat_id=%s)", chat_id)
             bot.edit_message_text(
                 "❌ Havola yaratishda xatolik yuz berdi. Iltimos, birozdan so'ng qaytadan urinib ko'ring.",
                 chat_id,
@@ -480,8 +485,8 @@ def deliver_files(chat_id, file_doc):
         sender = sender_map.get(file_type, bot.send_document)
         try:
             sender(chat_id, file_id)
-        except Exception as e:
-            print(f"Xatolik: faylni yuborishda muammo ({file_type}, {file_id}): {e}")
+        except Exception:
+            logger.exception("Faylni yuborishda muammo (chat_id=%s, file_type=%s)", chat_id, file_type)
 
 
 def complete_file_delivery(chat_id, token, file_doc):
@@ -495,8 +500,8 @@ def complete_file_delivery(chat_id, token, file_doc):
 
     try:
         run_async(database.increment_download(token))
-    except Exception as e:
-        print(f"Xatolik: yuklab olishlar sonini oshirishda muammo: {e}")
+    except Exception:
+        logger.exception("Yuklab olishlar sonini oshirishda muammo (token=%s)", token)
 
     bot.send_message(chat_id, "✅ Fayl(lar) muvaffaqiyatli yuborildi!")
 
@@ -509,8 +514,8 @@ def handle_deep_link_file(chat_id, token):
     """
     try:
         file_doc = run_async(database.get_file_by_token(token))
-    except Exception as e:
-        print(f"Xatolik: tokenni MongoDB'dan qidirishda muammo: {e}")
+    except Exception:
+        logger.exception("Tokenni MongoDB'dan qidirishda muammo (token=%s)", token)
         bot.send_message(chat_id, "⚠️ Ushbu havola mavjud emas yoki o'chirilgan.")
         return
 
@@ -662,8 +667,8 @@ def handle_cabinet_actions(call):
     if parts[1] == 'stat':
         try:
             file_doc = run_async(database.get_owned_file(owner_id, token))
-        except Exception as e:
-            print(f"Xatolik: fayl statistikasini olishda muammo: {e}")
+        except Exception:
+            logger.exception("Fayl statistikasini olishda muammo (owner_id=%s, token=%s)", owner_id, token)
             file_doc = None
 
         if file_doc is None:
@@ -693,8 +698,8 @@ def handle_cabinet_actions(call):
 
     try:
         deleted = run_async(database.deactivate_owned_file(owner_id, token))
-    except Exception as e:
-        print(f"Xatolik: kabinet faylini o'chirishda muammo: {e}")
+    except Exception:
+        logger.exception("Kabinet faylini o'chirishda muammo (owner_id=%s, token=%s)", owner_id, token)
         bot.answer_callback_query(
             call.id,
             "❌ Faylni o'chirib bo'lmadi. Iltimos, qaytadan urinib ko'ring.",
@@ -707,8 +712,6 @@ def handle_cabinet_actions(call):
     else:
         bot.answer_callback_query(call.id, "ℹ️ Fayl allaqachon faol emas yoki topilmadi.")
     show_cabinet(chat_id, msg_id, owner_id, page)
-
-
 
 
 @bot.callback_query_handler(func=lambda call: call.data in [
@@ -873,8 +876,8 @@ def handle_text(message):
         token = pending["token"]
         try:
             file_doc = run_async(database.get_file_by_token(token))
-        except Exception as e:
-            print(f"Xatolik: tokenni qayta tekshirishda muammo: {e}")
+        except Exception:
+            logger.exception("Tokenni qayta tekshirishda muammo (token=%s)", token)
             file_doc = None
 
         if not file_doc:
@@ -899,47 +902,71 @@ def handle_text(message):
         )
 
 
-@bot.message_handler(content_types=['photo', 'document'])
+@bot.message_handler(
+    content_types=['photo', 'document'],
+    func=lambda message: state.get(message.chat.id) == 'watermark',
+)
 def handle_watermark_upload(message):
+    """
+    MUHIM (bug tuzatildi): bu handler avval faqat ``content_types`` bilan
+    ro'yxatdan o'tgan edi, ``state`` tekshiruvi esa funksiya ICHIDA edi.
+    pyTelegramBotAPI bitta yangilanish uchun mos kelgan BIRINCHI handlerni
+    chaqiradi-yu, natija ``ContinueHandling`` bo'lmasa, keyingi handlerlarni
+    SINAB HAM KO'RMAYDI. Shu sababli, "watermark" holatida bo'lmagan
+    foydalanuvchi hujjat/rasm yuborganda, bu handler chaqirilib, ichkaridagi
+    ``if`` shartga tushmay indeksdan chiqib ketardi va pastdagi
+    ``handle_file_vault_upload`` HECH QACHON ishga tushmasdi — bot butunlay
+    jim qolardi. Yechim: ``state`` tekshiruvini ``func=`` filtriga chiqarish —
+    endi mos kelmasa, pyTelegramBotAPI avtomatik ravishda navbatdagi
+    handlerni (``handle_file_vault_upload``) sinab ko'radi.
+    """
     chat_id = message.chat.id
-    if state.get(chat_id) == 'watermark':
-        user_text = message.caption if message.caption else watermark.DEFAULT_WATERMARK_TEXT
+    user_text = message.caption if message.caption else watermark.DEFAULT_WATERMARK_TEXT
 
-        try:
-            if message.content_type == 'photo':
-                file_id = message.photo[-1].file_id
-            elif message.content_type == 'document' and message.document.mime_type.startswith('image/'):
-                file_id = message.document.file_id
-            else:
-                bot.send_message(
-                    chat_id,
-                    "⚠️ Iltimos, rasm formatidagi fayl yuboring.",
-                    reply_markup=get_back_markup()
-                )
-                return
-
-            file_info = bot.get_file(file_id)
-            downloaded_file = bot.download_file(file_info.file_path)
-            img = watermark.open_image(downloaded_file)
-            bio = watermark.apply_watermark(img, user_text)
-            bot.send_photo(
+    try:
+        if message.content_type == 'photo':
+            file_id = message.photo[-1].file_id
+        elif message.content_type == 'document' and message.document.mime_type.startswith('image/'):
+            file_id = message.document.file_id
+        else:
+            bot.send_message(
                 chat_id,
-                bio,
-                caption="✅ Watermark muvaffaqiyatli qo'shildi!",
+                "⚠️ Iltimos, rasm formatidagi fayl yuboring.",
                 reply_markup=get_back_markup()
             )
-        except Exception as e:
-            print(f"Xatolik: {e}")
-            bot.send_message(chat_id, "Xatolik yuz berdi.", reply_markup=get_back_markup())
+            return
+
+        file_info = bot.get_file(file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        img = watermark.open_image(downloaded_file)
+        bio = watermark.apply_watermark(img, user_text)
+        bot.send_photo(
+            chat_id,
+            bio,
+            caption="✅ Watermark muvaffaqiyatli qo'shildi!",
+            reply_markup=get_back_markup()
+        )
+    except Exception:
+        logger.exception("Watermark qo'llashda xatolik yuz berdi (chat_id=%s)", chat_id)
+        bot.send_message(chat_id, "Xatolik yuz berdi.", reply_markup=get_back_markup())
 
 
 # pyTelegramBotAPI's ``content_types`` is the equivalent of aiogram's
 # ``F.document | F.photo | F.video | F.audio`` filter.
-@bot.message_handler(content_types=['document', 'photo', 'video', 'audio'])
+#
+# MUHIM: ``state`` tekshiruvi ataylab ``func=`` filtriga chiqarilgan (funksiya
+# ichidagi ``if ...: return`` emas). Aks holda, agar boshqa bir content-type
+# handleri (masalan, ``handle_watermark_upload``) ushbu xabarni "ushlab qolsa"
+# (ya'ni pyTelegramBotAPI navbatdagi handlerlarni sinab ko'rmay to'xtasa), bu
+# handler HECH QACHON chaqirilmay qoladi va bot jim qolib ketadi. ``func=``
+# filtri esa mos kelmasa, dispatcher avtomatik ravishda shu handlerni
+# o'tkazib yuboradi va navbatdagi (mos) handlerni sinab ko'radi.
+@bot.message_handler(
+    content_types=['document', 'photo', 'video', 'audio'],
+    func=lambda message: state.get(message.chat.id) == FileVaultState.waiting_for_file,
+)
 def handle_file_vault_upload(message):
     chat_id = message.chat.id
-    if state.get(chat_id) != FileVaultState.waiting_for_file:
-        return
 
     try:
         if message.media_group_id:
